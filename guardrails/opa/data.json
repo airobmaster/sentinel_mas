@@ -1,0 +1,8 @@
+{
+  "agent_tools": {
+    "kyc": ["get_customer_profile", "get_crm_notes", "get_case_history"],
+    "txn": ["get_transactions", "detect_structuring", "detect_pass_through", "velocity_stats"],
+    "screening": ["screen_sanctions_pep", "search_adverse_media"],
+    "narrative": []
+  }
+}

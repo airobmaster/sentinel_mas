@@ -1,0 +1,63 @@
+# Sentinel local stack: Postgres, OPA and the MCP tool servers.
+#   docker compose up -d --build
+#   sentinel data generate && sentinel data load       (with SENTINEL_DATA_BACKEND=postgres or the .env)
+# Kafka, Airflow, Neo4j and observability services are added in later slices.
+name: sentinel
+
+x-mcp-server: &mcp-server
+  build:
+    context: .
+    dockerfile: mcp_servers/Dockerfile
+  image: sentinel-mcp:dev
+  environment:
+    SENTINEL_DATA_BACKEND: postgres
+    SENTINEL_PG_DSN: postgresql://sentinel:sentinel@postgres:5432/sentinel
+    SENTINEL_MCP_DEV_SECRET: ${SENTINEL_MCP_DEV_SECRET:-dev-only-signing-key-not-for-production}
+  depends_on:
+    postgres:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: sentinel
+      POSTGRES_PASSWORD: sentinel
+      POSTGRES_DB: sentinel
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sentinel -d sentinel"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  opa:
+    image: openpolicyagent/opa:latest
+    command: ["run", "--server", "--addr", "0.0.0.0:8181", "--log-level", "info", "/policies"]
+    volumes: ["./guardrails/opa:/policies:ro"]
+    ports: ["8181:8181"]
+
+  mcp-case-mgmt:
+    <<: *mcp-server
+    command: ["case_mgmt"]
+    ports: ["8101:8000"]
+
+  mcp-kyc-profile:
+    <<: *mcp-server
+    command: ["kyc_profile"]
+    ports: ["8102:8000"]
+
+  mcp-txn-history:
+    <<: *mcp-server
+    command: ["txn_history"]
+    ports: ["8103:8000"]
+
+  mcp-screening:
+    <<: *mcp-server
+    command: ["screening"]
+    ports: ["8104:8000"]
+
+volumes:
+  pgdata:

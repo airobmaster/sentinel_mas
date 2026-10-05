@@ -16,10 +16,16 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "sentinel.prompts" = ["*.md"]
+"sentinel.datagen" = ["*.sql"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 # deepeval's auto-loaded pytest plugin imports langchain.schema, removed in LangChain 1.x
-addopts = "-p no:plugins"
-markers = ["live: calls AWS Bedrock; run with SENTINEL_LIVE=1"]
+# Default run is offline; `pytest -m integration` / `pytest -m live` select the others.
+addopts = "-p no:plugins -m 'not integration and not live'"
+pythonpath = ["."]  # makes mcp_servers/ importable in tests
+markers = [
+    "live: calls AWS Bedrock; run with SENTINEL_LIVE=1",
+    "integration: needs the Docker stack (docker compose up -d --build)",
+]

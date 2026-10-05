@@ -1,5 +1,15 @@
 {
   "_comment": "Hand-made synthetic data. No real people or accounts. CUST-00042: planted STRUCT pattern. CUST-00077: benign one-off credit, explained in CRM. CUST-00099: true sanctions match. Near-miss names on the lists test false-match handling.",
+  "alerts": [
+    {"case_id": "CASE-0001", "alert_id": "TM-889120", "legal_entity": "UK", "customer_id": "CUST-00042", "account_ids": ["ACC-1001"], "scenario_code": "TM-STRUCT-01", "scenario_name": "Cash deposits below reporting threshold", "score": 0.82, "triggered_at": "2026-03-31T06:00:00Z", "lookback_days": 90, "triggering_txn_ids": ["TXN-1006", "TXN-1008", "TXN-1009", "TXN-1010", "TXN-1013"], "schema_version": "1.0"},
+    {"case_id": "CASE-0002", "alert_id": "TM-889342", "legal_entity": "UK", "customer_id": "CUST-00077", "account_ids": ["ACC-2001"], "scenario_code": "TM-HIGHVAL-01", "scenario_name": "Large incoming credit compared with profile", "score": 0.48, "triggered_at": "2026-03-31T06:00:00Z", "lookback_days": 90, "triggering_txn_ids": ["TXN-2006"], "schema_version": "1.0"},
+    {"case_id": "CASE-0003", "alert_id": "TM-889517", "legal_entity": "UK", "customer_id": "CUST-00099", "account_ids": ["ACC-3001"], "scenario_code": "TM-HRJ-01", "scenario_name": "Transfers to a high-risk jurisdiction", "score": 0.71, "triggered_at": "2026-03-31T06:00:00Z", "lookback_days": 90, "triggering_txn_ids": ["TXN-3002", "TXN-3004"], "schema_version": "1.0"}
+  ],
+  "ground_truth": {
+    "CASE-0001": {"typology": "STRUCT", "expected": "escalate", "acceptable": ["escalate"]},
+    "CASE-0002": {"typology": "BENIGN_ONE_OFF", "expected": "close", "acceptable": ["close", "request_info"]},
+    "CASE-0003": {"typology": "SANCT_TRUE", "expected": "escalate", "acceptable": ["escalate"]}
+  },
   "customers": [
     {
       "customer_id": "CUST-00042",
