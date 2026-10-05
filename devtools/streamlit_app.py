@@ -16,6 +16,7 @@ import pandas as pd
 import streamlit as st
 from langgraph.types import Command
 
+from sentinel import data
 from sentinel.cli import describe_update
 from sentinel.config import REPO_ROOT, settings
 from sentinel.graph import compile_graph, initial_state, run_config
@@ -67,13 +68,23 @@ def execute(payload, config: dict, label: str):
 # --- Sidebar: choose an alert --------------------------------------------------------------------
 with st.sidebar:
     st.header("Alert")
-    files = sorted(ALERT_DIR.glob("*.json"))
-    choice = st.selectbox("Fixture", [f.name for f in files])
-    uploaded = st.file_uploader("…or upload an alert JSON", type="json")
-    alert = json.load(uploaded) if uploaded else json.loads((ALERT_DIR / choice).read_text(encoding="utf-8"))
+    truth = data.ground_truth()
+    source = st.radio("Source", ["Data backend", "Fixture file"], horizontal=True)
+    if source == "Data backend":
+        alerts = {a["case_id"]: a for a in data.list_alerts()}
+        labels = {f"{cid} · {truth.get(cid, {}).get('typology', '?')}": cid for cid in alerts}
+        alert = alerts[labels[st.selectbox("Case", list(labels))]]
+    else:
+        choice = st.selectbox("Fixture", [f.name for f in sorted(ALERT_DIR.glob("*.json"))])
+        uploaded = st.file_uploader("…or upload an alert JSON", type="json")
+        alert = json.load(uploaded) if uploaded else json.loads((ALERT_DIR / choice).read_text(encoding="utf-8"))
     with st.expander("Alert payload"):
         st.json(alert)
+    if expected := truth.get(alert["case_id"]):
+        with st.expander("Expected outcome (ground truth, never shown to agents)"):
+            st.json(expected)
     st.caption(
+        f"Data `{settings.data_backend}` · tools `{settings.tool_mode}` · OPA `{settings.opa_url or 'off'}`  \n"
         f"Region `{settings.aws_region}` · models: kyc `{settings.model_kyc}`, txn `{settings.model_txn}`, "
         f"screening `{settings.model_screening}`, narrative `{settings.model_narrative}`"
     )

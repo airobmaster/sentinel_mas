@@ -16,7 +16,7 @@ APP = Path(__file__).resolve().parents[1] / "devtools" / "streamlit_app.py"
 def test_console_runs_a_case_and_records_the_decision():
     at = AppTest.from_file(str(APP), default_timeout=300)
     at.run()
-    at.sidebar.selectbox[0].select("CASE-0001.json")
+    at.sidebar.selectbox[0].select("CASE-0001 · STRUCT")
     at.sidebar.button[0].click().run()
     assert not at.exception and not at.error
     assert {m.label: m.value for m in at.metric}["Recommendation"] == "escalate"

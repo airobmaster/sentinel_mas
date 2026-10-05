@@ -1,7 +1,10 @@
-"""Run one alert end to end from the terminal.
+"""Sentinel command line.
 
     sentinel run data/fixtures/alerts/CASE-0001.json            # asks you for the decision
-    sentinel run data/fixtures/alerts/CASE-0001.json --accept   # accepts the recommendation
+    sentinel run --case CASE-G0001 --accept                      # alert from the data backend
+    sentinel data generate                                       # synthetic dataset -> data/generated/
+    sentinel data load                                           # fixtures + dataset -> Postgres
+    sentinel eval --n 20                                         # score recommendations vs ground truth
 """
 
 import argparse
@@ -13,6 +16,8 @@ from pathlib import Path
 
 from langgraph.types import Command
 
+from sentinel import data
+from sentinel.config import settings
 from sentinel.graph import compile_graph, initial_state, run_config
 from sentinel.hitl import validate_decision
 from sentinel.schemas import REASON_CODES
@@ -104,8 +109,7 @@ def ask_decision(p: dict) -> dict:
             print(f"Invalid decision: {e}")
 
 
-async def run(alert_path: str, accept: bool) -> int:
-    alert = json.loads(Path(alert_path).read_text(encoding="utf-8"))
+async def run(alert: dict, accept: bool) -> int:
     graph = compile_graph()
     config = run_config(alert["case_id"])
     print(f"Running {alert['case_id']} ({alert['scenario_code']})")
@@ -143,15 +147,67 @@ async def run(alert_path: str, accept: bool) -> int:
     return 0
 
 
+def print_eval(report: dict) -> None:
+    print(f"\n{'case':<12} {'typology':<22} {'expected':<9} {'got':<13} {'lane':<5} {'cites':<6} secs")
+    for r in report["cases"]:
+        got = r.get("recommendation") or "ERROR"
+        mark = "ok" if got in r["acceptable"] else "MISS"
+        cites = "-" if "error" in r else ("ok" if r["bad_citations"] == 0 else str(r["bad_citations"]))
+        print(f"{r['case_id']:<12} {r['typology']:<22} {r['expected']:<9} {got:<9}{mark:>4} "
+              f"{r.get('tier') or '-':<5} {cites:<6} {r['seconds']}")
+        if "error" in r:
+            print(f"             {r['error']}")
+        for issue in r.get("issues", []):
+            print(f"             - {issue}")
+    print(f"\n{json.dumps(report['metrics'], indent=2)}\nReport: {report['path']}")
+
+
 def main() -> None:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(prog="sentinel")
     sub = parser.add_subparsers(dest="command", required=True)
-    run_p = sub.add_parser("run", help="Investigate one alert JSON file")
-    run_p.add_argument("alert", help="Path to an alert JSON file")
+
+    run_p = sub.add_parser("run", help="Investigate one alert (a JSON file or a case ID from the data backend)")
+    run_p.add_argument("alert", nargs="?", help="Path to an alert JSON file")
+    run_p.add_argument("--case", help="Case ID to load from the data backend, e.g. CASE-G0001")
     run_p.add_argument("--accept", action="store_true", help="Accept the recommendation without prompting")
+
+    data_p = sub.add_parser("data", help="Generate or load the synthetic dataset")
+    data_sub = data_p.add_subparsers(dest="data_command", required=True)
+    gen_p = data_sub.add_parser("generate", help="Write data/generated/dataset.json")
+    gen_p.add_argument("--seed", type=int, default=42)
+    data_sub.add_parser("load", help="Load the fixtures and generated dataset into Postgres (recreates tables)")
+
+    eval_p = sub.add_parser("eval", help="Run alerts with ground truth up to human review and score them")
+    eval_p.add_argument("--n", type=int, default=20, help="Number of cases (stratified across typologies)")
+    eval_p.add_argument("--concurrency", type=int, default=4)
+    eval_p.add_argument("--cases", nargs="+", help="Run only these case IDs")
+
     args = parser.parse_args()
-    sys.exit(asyncio.run(run(args.alert, args.accept)))
+    if args.command == "run":
+        if bool(args.alert) == bool(args.case):
+            parser.error("give either an alert file or --case")
+        alert = json.loads(Path(args.alert).read_text(encoding="utf-8")) if args.alert else data.get_alert(args.case)
+        if not alert:
+            parser.error(f"case {args.case} not found in the {settings.data_backend} backend")
+        sys.exit(asyncio.run(run(alert, args.accept)))
+    elif args.command == "data" and args.data_command == "generate":
+        from sentinel.datagen.generator import generate
+
+        out = settings.dataset_paths[-1]
+        out.parent.mkdir(parents=True, exist_ok=True)
+        dataset = generate(args.seed)
+        out.write_text(json.dumps(dataset), encoding="utf-8")
+        print(f"Wrote {out}\n{json.dumps(dataset['meta']['counts'])}")
+    elif args.command == "data" and args.data_command == "load":
+        from sentinel.datagen.loader import load
+
+        counts = load(settings.dataset_paths, settings.pg_dsn)
+        print(f"Loaded into {settings.pg_dsn.rsplit('@', 1)[-1]}\n{json.dumps(counts, indent=2)}")
+    elif args.command == "eval":
+        from sentinel.evaluate import evaluate
+
+        print_eval(asyncio.run(evaluate(args.n, args.concurrency, args.cases)))
 
 
 if __name__ == "__main__":

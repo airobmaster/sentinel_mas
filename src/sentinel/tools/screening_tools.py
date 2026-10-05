@@ -1,21 +1,19 @@
-"""Screening tools for the screening agent; they move behind the `screening` MCP server later."""
+"""Screening tools (`screening` server). Name-based, so not scoped to a customer record."""
 
 import re
 
-from langchain_core.tools import tool
 from rapidfuzz import fuzz, utils
 
 from sentinel import data
 from sentinel.config import settings
-from sentinel.tools.txn_tools import render
+from sentinel.tools.common import local_tools, nothing_found, opaque, render
 
 
 def _tokens(text: str) -> set[str]:
-    return set(re.findall(r"[a-z]+", text.lower()))
+    return set(re.findall(r"\w+", text.lower()))
 
 
-@tool(response_format="content_and_artifact")
-def screen_sanctions_pep(name: str, dob: str = "", nationality: str = "") -> tuple[str, list[dict]]:
+def screen_sanctions_pep(legal_entity: str, name: str, dob: str = "", nationality: str = "") -> tuple[str, list[dict]]:
     """Fuzzy-match a person against the sanctions and PEP lists. Returns each candidate with its
     match score and whether date of birth and nationality agree. A name match alone is not a true match."""
     evidence = []
@@ -23,7 +21,7 @@ def screen_sanctions_pep(name: str, dob: str = "", nationality: str = "") -> tup
         score = fuzz.token_sort_ratio(name, entry["name"], processor=utils.default_process)
         if score < settings.name_match_threshold:
             continue
-        detail = entry.get("programme") or entry.get("position", "")
+        detail = entry.get("programme") or entry.get("position") or ""
         evidence.append(
             {
                 "id": f"list:{entry['list']}:{entry['entry_id']}",
@@ -37,12 +35,14 @@ def screen_sanctions_pep(name: str, dob: str = "", nationality: str = "") -> tup
             }
         )
     if not evidence:
-        return f"No sanctions or PEP candidates scored {settings.name_match_threshold:.0f}+ for this name.", []
+        return nothing_found(
+            "sanctions_pep", opaque(name, dob), "screening.screen_sanctions_pep",
+            f"Sanctions and PEP screening: no candidates scored {settings.name_match_threshold:.0f}+ for the customer's name.",
+        )
     return render(evidence), evidence
 
 
-@tool(response_format="content_and_artifact")
-def search_adverse_media(name: str) -> tuple[str, list[dict]]:
+def search_adverse_media(legal_entity: str, name: str) -> tuple[str, list[dict]]:
     """Find news articles that mention a person's first name and surname. Articles may be about a
     different person with the same name: check age, location and context."""
     parts = name.lower().split()
@@ -57,8 +57,10 @@ def search_adverse_media(name: str) -> tuple[str, list[dict]]:
         if wanted <= _tokens(f"{a['headline']} {a['text']}")
     ]
     if not evidence:
-        return "No adverse media found for this name.", []
+        return nothing_found("adverse_media", opaque(name), "screening.search_adverse_media",
+                             "Adverse media search: no articles mention the customer's name.")
     return render(evidence), evidence
 
 
-SCREENING_TOOLS = [screen_sanctions_pep, search_adverse_media]
+SCREENING_FUNCTIONS = [screen_sanctions_pep, search_adverse_media]
+SCREENING_TOOLS = local_tools(*SCREENING_FUNCTIONS)

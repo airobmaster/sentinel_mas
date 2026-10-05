@@ -71,4 +71,6 @@ def brief_for(agent: str, state: CaseState) -> str:
         )
     else:
         raise ValueError(f"No brief for agent {agent!r}")
+    if agent != "narrative":
+        brief += f"\nlegal_entity: {state['legal_entity']} (pass it to every tool call)"
     return brief + _qa_section(agent, state)

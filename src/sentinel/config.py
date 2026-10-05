@@ -1,10 +1,13 @@
-"""Runtime settings. Override any field with an env var, e.g. SENTINEL_MODEL_TXN=deepseek.v3-v1:0."""
+"""Runtime settings. Override any field with an env var (prefix SENTINEL_) or a .env file,
+e.g. SENTINEL_MODEL_TXN=deepseek.v3-v1:0. See .env.example for the Docker-backed setup."""
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+MCP_TOKEN_AUDIENCE = "sentinel-mcp"
 
 
 class Settings(BaseSettings):
@@ -19,8 +22,27 @@ class Settings(BaseSettings):
     model_screening: str = "deepseek.v3.2"
     model_narrative: str = "deepseek.v3.2"
 
-    # Data (JSON fixtures; replaced by Postgres + MCP tools in a later slice)
-    fixtures_path: Path = REPO_ROOT / "data" / "fixtures" / "cases.json"
+    # Data: "json" reads dataset files (no services needed); "postgres" reads the loaded database.
+    data_backend: Literal["json", "postgres"] = "json"
+    dataset_paths: list[Path] = [
+        REPO_ROOT / "data" / "fixtures" / "cases.json",
+        REPO_ROOT / "data" / "generated" / "dataset.json",  # from `sentinel data generate`; optional
+    ]
+    pg_dsn: str = "postgresql://sentinel:sentinel@localhost:5432/sentinel"
+
+    # Tools: "local" runs them in-process; "mcp" calls the MCP servers over HTTP.
+    tool_mode: Literal["local", "mcp"] = "local"
+    mcp_urls: dict[str, str] = {
+        "case_mgmt": "http://localhost:8101/mcp/",
+        "kyc_profile": "http://localhost:8102/mcp/",
+        "txn_history": "http://localhost:8103/mcp/",
+        "screening": "http://localhost:8104/mcp/",
+    }
+    mcp_require_auth: bool = True  # servers reject calls without a valid service token
+    mcp_dev_secret: str = "dev-only-signing-key-not-for-production"  # HS256 dev tokens (TDD §8.1 [LOCAL])
+
+    # Policy: OPA base URL, e.g. http://localhost:8181. Unset = no policy check (offline dev only).
+    opa_url: str | None = None
 
     # Business rules
     full_lane_amount: float = 50_000  # BR-02 full-lane threshold, entity currency
