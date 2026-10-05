@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sentinel"
+version = "0.1.0"
+description = "Sentinel: multi-agent AML investigation on LangGraph"
+requires-python = ">=3.11"
+
+[project.scripts]
+sentinel = "sentinel.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"sentinel.prompts" = ["*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+# deepeval's auto-loaded pytest plugin imports langchain.schema, removed in LangChain 1.x
+addopts = "-p no:plugins"
+markers = ["live: calls AWS Bedrock; run with SENTINEL_LIVE=1"]

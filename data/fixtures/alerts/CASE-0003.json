@@ -1,0 +1,14 @@
+{
+  "case_id": "CASE-0003",
+  "alert_id": "TM-889517",
+  "legal_entity": "UK",
+  "customer_id": "CUST-00099",
+  "account_ids": ["ACC-3001"],
+  "scenario_code": "TM-HRJ-01",
+  "scenario_name": "Transfers to a high-risk jurisdiction",
+  "score": 0.71,
+  "triggered_at": "2026-03-31T06:00:00Z",
+  "lookback_days": 90,
+  "triggering_txn_ids": ["TXN-3002", "TXN-3004"],
+  "schema_version": "1.0"
+}

@@ -1,0 +1,14 @@
+{
+  "case_id": "CASE-0001",
+  "alert_id": "TM-889120",
+  "legal_entity": "UK",
+  "customer_id": "CUST-00042",
+  "account_ids": ["ACC-1001"],
+  "scenario_code": "TM-STRUCT-01",
+  "scenario_name": "Cash deposits below reporting threshold",
+  "score": 0.82,
+  "triggered_at": "2026-03-31T06:00:00Z",
+  "lookback_days": 90,
+  "triggering_txn_ids": ["TXN-1006", "TXN-1008", "TXN-1009", "TXN-1010", "TXN-1013"],
+  "schema_version": "1.0"
+}

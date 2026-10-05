@@ -1,0 +1,14 @@
+{
+  "case_id": "CASE-0002",
+  "alert_id": "TM-889342",
+  "legal_entity": "UK",
+  "customer_id": "CUST-00077",
+  "account_ids": ["ACC-2001"],
+  "scenario_code": "TM-HIGHVAL-01",
+  "scenario_name": "Large incoming credit compared with profile",
+  "score": 0.48,
+  "triggered_at": "2026-03-31T06:00:00Z",
+  "lookback_days": 90,
+  "triggering_txn_ids": ["TXN-2006"],
+  "schema_version": "1.0"
+}

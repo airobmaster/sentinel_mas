@@ -1,0 +1,140 @@
+# =========================================================
+# Sentinel — .gitignore
+# =========================================================
+
+# ---------- Secrets & environment ----------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+credentials.json
+.aws/
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+.venv/
+venv/
+env/
+.senv/
+senv/
+.svenv/
+.python-version
+
+# Test, coverage & tooling caches
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+.tox/
+.nox/
+.hypothesis/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# ---------- Node / workbench UI ----------
+node_modules/
+ui/workbench/dist/
+ui/workbench/.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+
+# Playwright
+playwright-report/
+test-results/
+blob-report/
+playwright/.cache/
+
+# ---------- Data (synthetic data is generated, never committed) ----------
+data/generated/
+data/**/*.parquet
+data/**/*.csv
+!evals/datasets/**/*.csv
+*.sqlite
+*.db
+
+# ---------- Evaluation outputs ----------
+evals/results/
+evals/reports/
+.deepeval/
+.deepeval_telemetry.txt
+evals/promptfoo/output/
+.promptfoo/
+
+# ---------- Airflow ----------
+ingestion/airflow/logs/
+ingestion/airflow/airflow.db
+ingestion/airflow/airflow.cfg
+ingestion/airflow/webserver_config.py
+ingestion/airflow/standalone_admin_password.txt
+
+# ---------- Docker / local volumes ----------
+.docker-data/
+volumes/
+neo4j-data/
+postgres-data/
+kafka-data/
+grafana-data/
+tempo-data/
+prometheus-data/
+
+# ---------- Terraform ----------
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+crash.log
+crash.*.log
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+# Note: .terraform.lock.hcl IS committed
+
+# ---------- Logs ----------
+logs/
+*.log
+
+# ---------- IDE / editor ----------
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/launch.json
+.idea/
+*.swp
+*.swo
+*~
+
+# ---------- OS ----------
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+
+# ---------- Claude Code local settings ----------
+.claude/settings.local.json

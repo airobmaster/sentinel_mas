@@ -1,0 +1,97 @@
+{
+  "_comment": "Hand-made synthetic data. No real people or accounts. CUST-00042: planted STRUCT pattern. CUST-00077: benign one-off credit, explained in CRM. CUST-00099: true sanctions match. Near-miss names on the lists test false-match handling.",
+  "customers": [
+    {
+      "customer_id": "CUST-00042",
+      "legal_entity": "UK",
+      "name": "Jordan Ellis",
+      "dob": "1994-02-17",
+      "nationality": "GB",
+      "segment": "retail",
+      "risk_rating": "medium",
+      "occupation": "Retail shop assistant",
+      "business_purpose": "Personal current account for salary and household spending",
+      "expected_monthly_credits": 2000,
+      "expected_monthly_cash": 200,
+      "prior_alerts_12m": 0,
+      "account_ids": ["ACC-1001"]
+    },
+    {
+      "customer_id": "CUST-00077",
+      "legal_entity": "UK",
+      "name": "Sam Carter",
+      "dob": "1990-06-14",
+      "nationality": "GB",
+      "segment": "retail",
+      "risk_rating": "low",
+      "occupation": "Software engineer",
+      "business_purpose": "Personal current account for salary, mortgage and household spending",
+      "expected_monthly_credits": 5000,
+      "expected_monthly_cash": 0,
+      "prior_alerts_12m": 0,
+      "account_ids": ["ACC-2001"]
+    },
+    {
+      "customer_id": "CUST-00099",
+      "legal_entity": "UK",
+      "name": "Arlo Brennan Voss",
+      "dob": "1971-04-12",
+      "nationality": "GB",
+      "segment": "business",
+      "risk_rating": "high",
+      "occupation": "Director, Voss Trading Ltd (electronics import/export)",
+      "business_purpose": "Business account for trade receipts and supplier payments",
+      "expected_monthly_credits": 30000,
+      "expected_monthly_cash": 0,
+      "prior_alerts_12m": 1,
+      "account_ids": ["ACC-3001"]
+    }
+  ],
+  "crm_notes": [
+    {"note_id": "CRM-0042-01", "customer_id": "CUST-00042", "date": "2024-06-01", "text": "Onboarding: customer employed full time as a shop assistant at Corner Shop Ltd. Stated no other income sources and no business activity."},
+    {"note_id": "CRM-0077-01", "customer_id": "CUST-00077", "date": "2026-03-10", "text": "Customer phoned to say they are selling their car (VW Golf) privately for about GBP 12,500 and the buyer will pay by bank transfer."},
+    {"note_id": "CRM-0099-01", "customer_id": "CUST-00099", "date": "2025-09-15", "text": "Annual review: director of Voss Trading Ltd, import/export of consumer electronics. Main suppliers in the UAE."}
+  ],
+  "sanctions_list": [
+    {"list": "OFSI", "entry_id": "OFSI-7781", "name": "Arlo Brennan Voss", "dob": "1971-04-12", "nationality": "GB", "programme": "Russia sanctions (export controls evasion)"},
+    {"list": "OFSI", "entry_id": "OFSI-5120", "name": "Jordan Ellison", "dob": "1966-01-02", "nationality": "IE", "programme": "Counter-terrorism financing"}
+  ],
+  "pep_list": [
+    {"list": "PEP", "entry_id": "PEP-221", "name": "Samuel Carter", "dob": "1962-08-30", "nationality": "GB", "position": "Member of Parliament"}
+  ],
+  "adverse_media": [
+    {"article_id": "MED-001", "date": "2025-11-04", "headline": "Cornwall builder fined for fly-tipping", "text": "Jordan Ellis, 58, a builder from Truro, was fined GBP 900 for dumping waste on farmland."},
+    {"article_id": "MED-002", "date": "2026-01-22", "headline": "Electronics trader named in sanctions evasion probe", "text": "Arlo Voss, director of Voss Trading Ltd, is among those named in an investigation into the re-export of restricted electronics through the UAE."}
+  ],
+  "transactions": [
+    {"txn_id": "TXN-1000", "account_id": "ACC-1001", "date": "2025-11-20", "direction": "credit", "amount": 300.00, "currency": "GBP", "channel": "cash", "branch": "Leeds Central", "counterparty": null, "reference": "Cash deposit"},
+    {"txn_id": "TXN-1001", "account_id": "ACC-1001", "date": "2026-01-05", "direction": "credit", "amount": 1850.00, "currency": "GBP", "channel": "transfer", "branch": null, "counterparty": "Corner Shop Ltd", "reference": "Salary"},
+    {"txn_id": "TXN-1002", "account_id": "ACC-1001", "date": "2026-01-08", "direction": "debit", "amount": 64.20, "currency": "GBP", "channel": "card", "branch": null, "counterparty": "Supermarket", "reference": "Groceries"},
+    {"txn_id": "TXN-1003", "account_id": "ACC-1001", "date": "2026-01-15", "direction": "debit", "amount": 750.00, "currency": "GBP", "channel": "direct_debit", "branch": null, "counterparty": "Lettings Agency", "reference": "Rent"},
+    {"txn_id": "TXN-1004", "account_id": "ACC-1001", "date": "2026-02-05", "direction": "credit", "amount": 1850.00, "currency": "GBP", "channel": "transfer", "branch": null, "counterparty": "Corner Shop Ltd", "reference": "Salary"},
+    {"txn_id": "TXN-1005", "account_id": "ACC-1001", "date": "2026-02-15", "direction": "debit", "amount": 750.00, "currency": "GBP", "channel": "direct_debit", "branch": null, "counterparty": "Lettings Agency", "reference": "Rent"},
+    {"txn_id": "TXN-1006", "account_id": "ACC-1001", "date": "2026-03-03", "direction": "credit", "amount": 9400.00, "currency": "GBP", "channel": "cash", "branch": "Leeds Central", "counterparty": null, "reference": "Cash deposit"},
+    {"txn_id": "TXN-1007", "account_id": "ACC-1001", "date": "2026-03-05", "direction": "credit", "amount": 1850.00, "currency": "GBP", "channel": "transfer", "branch": null, "counterparty": "Corner Shop Ltd", "reference": "Salary"},
+    {"txn_id": "TXN-1008", "account_id": "ACC-1001", "date": "2026-03-06", "direction": "credit", "amount": 9800.00, "currency": "GBP", "channel": "cash", "branch": "Bradford", "counterparty": null, "reference": "Cash deposit"},
+    {"txn_id": "TXN-1009", "account_id": "ACC-1001", "date": "2026-03-10", "direction": "credit", "amount": 9500.00, "currency": "GBP", "channel": "cash", "branch": "Wakefield", "counterparty": null, "reference": "Cash deposit"},
+    {"txn_id": "TXN-1010", "account_id": "ACC-1001", "date": "2026-03-14", "direction": "credit", "amount": 9650.00, "currency": "GBP", "channel": "cash", "branch": "Leeds Central", "counterparty": null, "reference": "Cash deposit"},
+    {"txn_id": "TXN-1011", "account_id": "ACC-1001", "date": "2026-03-15", "direction": "debit", "amount": 750.00, "currency": "GBP", "channel": "direct_debit", "branch": null, "counterparty": "Lettings Agency", "reference": "Rent"},
+    {"txn_id": "TXN-1012", "account_id": "ACC-1001", "date": "2026-03-18", "direction": "debit", "amount": 38000.00, "currency": "GBP", "channel": "transfer", "branch": null, "counterparty": "ACC-EXT-5501", "reference": "Payment"},
+    {"txn_id": "TXN-1013", "account_id": "ACC-1001", "date": "2026-03-21", "direction": "credit", "amount": 9200.00, "currency": "GBP", "channel": "cash", "branch": "Huddersfield", "counterparty": null, "reference": "Cash deposit"},
+    {"txn_id": "TXN-1014", "account_id": "ACC-1001", "date": "2026-03-25", "direction": "debit", "amount": 41.10, "currency": "GBP", "channel": "card", "branch": null, "counterparty": "Supermarket", "reference": "Groceries"},
+
+    {"txn_id": "TXN-2001", "account_id": "ACC-2001", "date": "2026-01-28", "direction": "credit", "amount": 4600.00, "currency": "GBP", "channel": "transfer", "branch": null, "counterparty": "Northwind Software Ltd", "reference": "Salary"},
+    {"txn_id": "TXN-2002", "account_id": "ACC-2001", "date": "2026-02-01", "direction": "debit", "amount": 1400.00, "currency": "GBP", "channel": "direct_debit", "branch": null, "counterparty": "Building Society", "reference": "Mortgage"},
+    {"txn_id": "TXN-2003", "account_id": "ACC-2001", "date": "2026-02-10", "direction": "debit", "amount": 120.00, "currency": "GBP", "channel": "card", "branch": null, "counterparty": "Supermarket", "reference": "Groceries"},
+    {"txn_id": "TXN-2004", "account_id": "ACC-2001", "date": "2026-02-27", "direction": "credit", "amount": 4600.00, "currency": "GBP", "channel": "transfer", "branch": null, "counterparty": "Northwind Software Ltd", "reference": "Salary"},
+    {"txn_id": "TXN-2005", "account_id": "ACC-2001", "date": "2026-03-01", "direction": "debit", "amount": 1400.00, "currency": "GBP", "channel": "direct_debit", "branch": null, "counterparty": "Building Society", "reference": "Mortgage"},
+    {"txn_id": "TXN-2006", "account_id": "ACC-2001", "date": "2026-03-12", "direction": "credit", "amount": 12500.00, "currency": "GBP", "channel": "transfer", "branch": null, "counterparty": "J. Carter", "reference": "Car sale - VW Golf"},
+    {"txn_id": "TXN-2007", "account_id": "ACC-2001", "date": "2026-03-20", "direction": "debit", "amount": 85.00, "currency": "GBP", "channel": "card", "branch": null, "counterparty": "Supermarket", "reference": "Groceries"},
+    {"txn_id": "TXN-2008", "account_id": "ACC-2001", "date": "2026-03-27", "direction": "credit", "amount": 4600.00, "currency": "GBP", "channel": "transfer", "branch": null, "counterparty": "Northwind Software Ltd", "reference": "Salary"},
+
+    {"txn_id": "TXN-3001", "account_id": "ACC-3001", "date": "2026-02-02", "direction": "credit", "amount": 25000.00, "currency": "GBP", "channel": "transfer", "branch": null, "counterparty": "Brightline Retail Ltd", "reference": "Invoice 1041"},
+    {"txn_id": "TXN-3002", "account_id": "ACC-3001", "date": "2026-02-06", "direction": "debit", "amount": 22000.00, "currency": "GBP", "channel": "transfer", "branch": null, "counterparty": "Gulf Components FZE (AE)", "reference": "Supplier payment"},
+    {"txn_id": "TXN-3003", "account_id": "ACC-3001", "date": "2026-03-04", "direction": "credit", "amount": 26000.00, "currency": "GBP", "channel": "transfer", "branch": null, "counterparty": "Brightline Retail Ltd", "reference": "Invoice 1057"},
+    {"txn_id": "TXN-3004", "account_id": "ACC-3001", "date": "2026-03-09", "direction": "debit", "amount": 22000.00, "currency": "GBP", "channel": "transfer", "branch": null, "counterparty": "Gulf Components FZE (AE)", "reference": "Supplier payment"}
+  ]
+}

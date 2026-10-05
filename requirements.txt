@@ -1,0 +1,97 @@
+# Sentinel — Python dependencies (Python 3.12)
+#
+# Install:   uv pip install -r requirements.txt     (or: pip install -r requirements.txt)
+# Then:      python -m spacy download en_core_web_lg   (model used by Presidio)
+#
+# Not installed from this file:
+#   - Apache Airflow: runs in its own container (apache/airflow 3.x image) with Airflow's
+#     official constraints file; DAG-only extras go in ingestion/airflow/requirements.txt.
+#   - Promptfoo and Playwright E2E: Node tools, installed via npm (evals/promptfoo, ui/workbench).
+#   - OPA: called over HTTP (httpx); runs as its own container.
+#
+# Pins follow TDD §23. Keep `mcp` < 2.0 until langchain-mcp-adapters confirms MCP SDK v2 support.
+
+# --- Agent orchestration (LangGraph / LangChain) ---------------------------
+langgraph>=1.2,<2.0
+langgraph-checkpoint-postgres>=2.0
+langchain>=1.0,<2.0
+langchain-core>=1.0,<2.0
+langchain-aws>=1.0                  # ChatBedrockConverse, BedrockEmbeddings
+langchain-anthropic>=1.0            # local fallback provider when Bedrock is unavailable
+langchain-postgres>=0.0.15          # PGVector store
+langsmith[otel]>=0.4                # dev tracing + OpenTelemetry-only mode in prod
+
+# --- Tools (Model Context Protocol) ----------------------------------------
+mcp>=1.10,<2.0
+fastmcp>=2.10,<3.0
+langchain-mcp-adapters==0.3.2
+
+# --- Models / AWS -----------------------------------------------------------
+boto3>=1.35
+botocore[crt]>=1.35                 # required by the `aws login` credential provider
+aws-msk-iam-sasl-signer-python>=1.0 # MSK Serverless IAM auth for the Kafka client
+
+# --- Streaming (Kafka) ------------------------------------------------------
+aiokafka>=0.11
+
+# --- Data stores ------------------------------------------------------------
+psycopg[binary,pool]>=3.2
+pgvector>=0.3
+sqlalchemy>=2.0
+alembic>=1.13
+neo4j>=5.20
+graphdatascience>=1.10              # Neo4j GDS client (local Neo4j with GDS plugin)
+networkx>=3.3                       # graph-score fallback where GDS is unavailable (AuraDB Free)
+
+# --- Document parsing & retrieval -------------------------------------------
+docling>=2.0
+langchain-docling>=1.0
+
+# --- Guardrails -------------------------------------------------------------
+presidio-analyzer>=2.2
+presidio-anonymizer>=2.2
+rapidfuzz>=3.9                      # sanctions/PEP fuzzy matching
+
+# --- API / service ----------------------------------------------------------
+fastapi>=0.115
+uvicorn[standard]>=0.30
+sse-starlette>=2.1
+pydantic>=2.8
+pydantic-settings>=2.4
+httpx>=0.27                         # OPA client, MCP/HTTP calls, tests
+pyjwt[crypto]>=2.9                  # dev-token / OIDC JWT validation
+tenacity>=9.0
+structlog>=24.1
+python-dotenv>=1.0
+orjson>=3.10
+
+# --- Synthetic data ---------------------------------------------------------
+faker>=28.0
+numpy>=1.26
+pandas>=2.2
+pyarrow>=17.0
+
+# --- Observability ----------------------------------------------------------
+opentelemetry-sdk>=1.27
+opentelemetry-exporter-otlp>=1.27
+opentelemetry-instrumentation-fastapi>=0.48b0
+opentelemetry-instrumentation-httpx>=0.48b0
+prometheus-client>=0.20
+
+# --- Evaluation -------------------------------------------------------------
+deepeval>=2.0
+
+# --- Testing & code quality (dev) -------------------------------------------
+pytest>=8.3
+pytest-asyncio>=0.24
+pytest-cov>=5.0
+ruff>=0.6
+mypy>=1.11
+pre-commit>=3.8
+detect-secrets>=1.5
+streamlit>=1.40                     # dev test console (devtools/streamlit_app.py); not deployed
+
+# --- Backlog (after Day 7) — uncomment when adopted -------------------------
+nemoguardrails>=0.10
+ragas>=0.2
+a2a-sdk>=0.2
