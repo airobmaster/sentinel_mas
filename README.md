@@ -182,6 +182,14 @@ sentinel data load               # fixtures + generated dataset -> Postgres
 sentinel kafka init              # create the topics
 ```
 
+**On Windows, one click:** `start_sentinel.bat` does all of the following:
+1. checks Docker and your AWS login;
+2. starts the containers and creates the Kafka topics;
+3. opens the Kafka worker in its own terminal window;
+4. starts the test console and opens it in a new browser window.
+
+Use `start_sentinel.bat setup` the first time, or to regenerate and reload the data.
+
 The generator is seeded, so every run produces the same data. It creates around 300 customers, 18,000 transactions and 85 alerts. Each alert has a planted pattern with a known correct outcome: structuring, pass-through, mule activity, high-risk jurisdictions, true and near-miss sanctions matches, PEPs, and benign look-alikes such as cash-intensive businesses, property sales and bonuses.
 
 ### Run an investigation
@@ -195,13 +203,17 @@ sentinel run --case CASE-G0001          # any alert in the data backend
 streamlit run devtools/streamlit_app.py
 ```
 
-The test console has two modes:
-- **Direct (in-process):** runs one alert inside the console. No Docker needed.
+The test console has two modes with the same three views:
+- **Case:** the review packet and the decision form.
+- **Work queue:** cases by status.
+- **Event stream:** case events.
+
+The modes differ in where the case runs:
+- **Direct (in-process):** runs alerts inside the console, with no Docker needed. The queue and event stream cover this browser session.
 - **Kafka (full stack):**
   - publishes the alert to Kafka and shows the worker's progress live;
   - opens the review packet from the Postgres checkpointer;
   - sends your decision back through Kafka;
-  - includes a work queue of cases by status and the raw case-event stream;
   - has buttons to re-send an alert or a decision, to show they are ignored safely.
 
   It needs `sentinel worker all` running.

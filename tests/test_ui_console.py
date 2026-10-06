@@ -23,4 +23,11 @@ def test_console_runs_a_case_and_records_the_decision():
 
     next(b for b in at.button if b.label == "Submit decision").click().run()
     assert not at.exception
-    assert "Decision recorded: **escalate**" in at.success[0].value
+    assert any("Decision recorded: **escalate**" in s.value for s in at.success)
+
+    # Direct mode has the same Work queue and Event stream views as Kafka mode
+    frames = [df.value for df in at.dataframe]
+    queue = next(f for f in frames if "status" in f.columns and "case" in f.columns)
+    assert queue.iloc[0]["case"] == "CASE-0001" and "escalated" in queue.iloc[0]["status"]
+    stream = next(f for f in frames if "event" in f.columns and len(f) > 5)
+    assert {"case_started", "node_completed", "awaiting_review", "decision_applied"} <= set(stream["event"])
