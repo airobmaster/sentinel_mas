@@ -11,7 +11,7 @@ from sentinel import data
 from sentinel.config import REPO_ROOT, settings
 from sentinel.repo.json_repo import JsonRepo
 from sentinel.repo.postgres_repo import PostgresRepo
-from sentinel.tools.mcp_clients import mcp_tools, service_token
+from sentinel.tools.mcp_clients import service_token, session_tools
 
 pytestmark = pytest.mark.integration
 OPA_URL = "http://localhost:8181"
@@ -67,11 +67,13 @@ async def test_opa_decisions(monkeypatch, policy_input, allowed):
 @needs_mcp
 async def test_mcp_tools_over_http_return_evidence(monkeypatch):
     monkeypatch.setattr(settings, "mcp_urls", {**settings.mcp_urls, "txn_history": "http://localhost:8103/mcp/"})
-    tools = await mcp_tools(["txn_history"], ["detect_structuring"])
-    assert [t.name for t in tools] == ["detect_structuring"]
-    msg = await tools[0].ainvoke({"type": "tool_call", "id": "1", "name": "detect_structuring",
-                                  "args": {"legal_entity": "UK", "account_id": "ACC-1001", "as_of": "2026-03-31"}})
-    assert msg.artifact["structured_content"]["evidence"][0]["id"] == "txn:TXN-1006"
+    async with session_tools(["txn_history"], ["detect_structuring", "velocity_stats"]) as tools:
+        assert sorted(t.name for t in tools) == ["detect_structuring", "velocity_stats"]
+        tool = next(t for t in tools if t.name == "detect_structuring")
+        for _ in range(3):  # several calls on one open session
+            msg = await tool.ainvoke({"type": "tool_call", "id": "1", "name": "detect_structuring",
+                                      "args": {"legal_entity": "UK", "account_id": "ACC-1001", "as_of": "2026-03-31"}})
+            assert msg.artifact["structured_content"]["evidence"][0]["id"] == "txn:TXN-1006"
 
 
 @needs_mcp

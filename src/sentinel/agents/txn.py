@@ -8,7 +8,7 @@ from sentinel.state import CaseState
 
 
 async def txn(state: CaseState) -> dict:
-    spec = await get_specialist("txn", settings.model_txn, "txn", TxnFindings)
+    spec = get_specialist("txn", settings.model_txn, "txn", TxnFindings)
     findings, messages = await run_specialist(spec, brief_for("txn", state), state["legal_entity"])
     return {
         "evidence": tool_evidence(messages, "txn"),

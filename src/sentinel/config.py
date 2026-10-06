@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     # Policy: OPA base URL, e.g. http://localhost:8181. Unset = no policy check (offline dev only).
     opa_url: str | None = None
 
+    # Streaming (Kafka). "plaintext" for the local broker; "msk_iam" for Amazon MSK Serverless (FR-001).
+    kafka_bootstrap: str = "localhost:9092"
+    kafka_security: Literal["plaintext", "msk_iam"] = "plaintext"
+    kafka_partitions: int = 6
+    worker_max_attempts: int = 2  # per message, on top of node-level retries; then the DLQ
+
     # Business rules
     full_lane_amount: float = 50_000  # BR-02 full-lane threshold, entity currency
     cash_reporting_threshold: float = 10_000  # structuring detector threshold

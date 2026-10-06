@@ -8,7 +8,7 @@ from sentinel.state import CaseState
 
 
 async def screening(state: CaseState) -> dict:
-    spec = await get_specialist("screening", settings.model_screening, "screening", ScreeningFindings)
+    spec = get_specialist("screening", settings.model_screening, "screening", ScreeningFindings)
     findings, messages = await run_specialist(spec, brief_for("screening", state), state["legal_entity"])
     return {
         "evidence": tool_evidence(messages, "screening"),
