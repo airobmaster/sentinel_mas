@@ -25,11 +25,12 @@ Sentinel automates the **evidence-gathering and drafting** part of an investigat
 
 For each alert, Sentinel:
 
-1. **Triages** the alert into a fast or a full investigation lane, using deterministic business rules.
-2. **Gathers evidence in parallel** with specialist agents for customer context (KYC), transactions and screening, each using fixed, read-only tools.
-3. **Drafts a narrative** in which every factual claim cites an evidence ID that a tool actually returned.
-4. **Checks its own work**: code guards verify citations and completeness, and a failed check sends the work back for one rework.
-5. **Pauses for a human investigator**, who reviews the evidence pack and recommendation, then decides: *close*, *escalate* or *request information*.
+1. **Receives the alert** from the transaction-monitoring stream (Kafka) and starts one durable, checkpointed investigation per case.
+2. **Triages** the alert into a fast or a full investigation lane, using deterministic business rules.
+3. **Gathers evidence in parallel** with specialist agents for customer context (KYC), transactions and screening. Each agent uses fixed, read-only tools, and a policy engine authorises every call.
+4. **Drafts a narrative** in which every factual claim cites an evidence ID that a tool actually returned.
+5. **Checks its own work**: code guards verify citations and completeness, and a failed check sends the work back for one rework.
+6. **Pauses for a human investigator**, who reviews the evidence pack and recommendation, then decides: *close*, *escalate* or *request information*. The decision comes back on the stream and completes the case.
 
 ### Why an agentic system?
 
@@ -43,6 +44,30 @@ For each alert, Sentinel:
 - It never changes customer data.
 - It never writes free-form SQL or graph queries. All data access goes through fixed, parameterised tools.
 - It never presents a claim without an evidence ID that exists in the case.
+
+---
+
+## Current status
+
+Sentinel is being built in thin end-to-end slices, each tested before the next widens it.
+
+**Working today**
+- The **end-to-end flow** from a Kafka alert to the investigator's decision. Case state is saved in Postgres, so paused cases survive restarts. Duplicate alerts and late decisions are handled safely, and messages that keep failing go to a dead-letter queue.
+- **Six graph steps**: triage (rules), KYC context, transaction analytics, screening, narrative, and QA code checks with one rework loop.
+- **Tools behind MCP servers.** Each agent gets only its own tools, every call is authorised by an OPA policy, and every request is scoped to the case's legal entity.
+- A **synthetic dataset** with planted typologies and known outcomes, loaded into Postgres.
+- **Batch evaluation** against those known outcomes. On a 20-case sample spanning every typology, every recommendation was correct and every claim cited real evidence.
+- **Tests:** offline, integration (Docker stack) and live (Bedrock), plus a Streamlit test console for developers.
+
+**Planned**
+- The Network agent (graph database) and the Typology & policy agent (searchable policy knowledge base).
+- An LLM QA critic.
+- PII and prompt-injection guardrails.
+- Approval steps for high-impact tool calls and customer follow-up requests.
+- Scheduled batch jobs (Airflow).
+- An API and the React investigator workbench.
+- Observability.
+- Deployment to AWS.
 
 ---
 
@@ -66,7 +91,11 @@ flowchart TD
     W --> Q
     Q -->|pass, or issues remain| H[[Human review<br/>run pauses]]
     H --> E((Decision recorded))
+    classDef planned stroke-dasharray: 5 5
+    class N,P planned
 ```
+
+*Dashed boxes are planned. Until the Typology & policy agent is added, the specialists' findings go straight to the Narrative agent, which makes the recommendation.*
 
 Each case is one run of a LangGraph `StateGraph`. The run is checkpointed, so it can pause for days at human review and resume exactly where it stopped. Shared case state collects evidence and findings from every agent. Its merge rules (reducers) let parallel agents write at the same time and let a reworked agent replace, rather than duplicate, its earlier output.
 
