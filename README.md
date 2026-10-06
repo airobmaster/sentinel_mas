@@ -195,6 +195,17 @@ sentinel run --case CASE-G0001          # any alert in the data backend
 streamlit run devtools/streamlit_app.py
 ```
 
+The test console has two modes:
+- **Direct (in-process):** runs one alert inside the console. No Docker needed.
+- **Kafka (full stack):**
+  - publishes the alert to Kafka and shows the worker's progress live;
+  - opens the review packet from the Postgres checkpointer;
+  - sends your decision back through Kafka;
+  - includes a work queue of cases by status and the raw case-event stream;
+  - has buttons to re-send an alert or a decision, to show they are ignored safely.
+
+  It needs `sentinel worker all` running.
+
 ### Run through Kafka (as in production)
 
 Alerts arrive on `aml.alerts.v1`. The worker investigates each case, sends progress to `aml.case-events.v1`, and pauses the case at human review, where its saved state in Postgres survives restarts. A decision on `aml.decisions.v1` then resumes the case. Duplicate alerts and late decisions are ignored safely. Messages that keep failing go to the dead-letter queue.

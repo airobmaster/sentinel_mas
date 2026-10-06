@@ -256,7 +256,8 @@ def main() -> None:
     data_sub = data_p.add_subparsers(dest="data_command", required=True)
     gen_p = data_sub.add_parser("generate", help="Write data/generated/dataset.json")
     gen_p.add_argument("--seed", type=int, default=42)
-    data_sub.add_parser("load", help="Load the fixtures and generated dataset into Postgres (recreates tables)")
+    data_sub.add_parser("load", help="Load the fixtures and generated dataset into Postgres "
+                                     "(recreates the data tables and clears case runs)")
 
     eval_p = sub.add_parser("eval", help="Run alerts with ground truth up to human review and score them")
     eval_p.add_argument("--n", type=int, default=20, help="Number of cases (stratified across typologies)")
