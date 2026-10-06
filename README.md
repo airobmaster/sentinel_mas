@@ -111,9 +111,10 @@ Each case is one run of a LangGraph `StateGraph`. The run is checkpointed, so it
 | Local stack | Docker Compose | In use |
 | Language & tooling | Python, pytest (offline, integration and live suites), pydantic-settings | In use |
 | Test console | Streamlit (developer tool only, not deployed) | In use |
-| Event streaming | Apache Kafka (alerts in, decisions back) | Planned |
+| Event streaming | Apache Kafka (KRaft) + Kafka UI: alerts in, decisions back, case events out, dead-letter queue; `aiokafka` workers; MSK IAM auth switch for AWS | In use |
+| Durable runs | LangGraph `AsyncPostgresSaver`: cases pause for days at human review and survive restarts | In use |
 | Scheduling | Apache Airflow (list refreshes, graph rebuilds, alert replay) | Planned |
-| More data stores | pgvector policy search, durable Postgres checkpoints, Neo4j + GDS (networks) | Planned |
+| More data stores | pgvector policy search, Neo4j + GDS (networks) | Planned |
 | Documents | Docling (policy manuals → searchable chunks) | Planned |
 | Guardrails | Presidio (PII), prompt-injection rails | Planned |
 | API & UI | FastAPI service, React investigator workbench | Planned |
@@ -142,13 +143,14 @@ Settings can be overridden with environment variables or a `.env` file, for exam
 | Mode | What runs | Setup |
 |---|---|---|
 | **In-process** (default) | Tools run inside the agent process on JSON datasets. No Docker needed. | Nothing extra |
-| **Full stack** | Postgres, OPA and four MCP tool servers in Docker; agents call tools over MCP, and OPA authorises every call | See below |
+| **Full stack** | Postgres, Kafka, OPA and four MCP tool servers in Docker; agents call tools over MCP, and OPA authorises every call | See below |
 
 ```bash
-docker compose up -d --build     # Postgres, OPA, MCP servers
-cp .env.example .env             # data=postgres, tools=mcp, OPA on
+docker compose up -d --build     # Postgres, Kafka + UI (localhost:8080), OPA, MCP servers
+cp .env.example .env             # data=postgres, tools=mcp, OPA on, local Kafka
 sentinel data generate           # synthetic dataset -> data/generated/dataset.json
 sentinel data load               # fixtures + generated dataset -> Postgres
+sentinel kafka init              # create the topics
 ```
 
 The generator is seeded, so every run produces the same data. It creates around 300 customers, 18,000 transactions and 85 alerts. Each alert has a planted pattern with a known correct outcome: structuring, pass-through, mule activity, high-risk jurisdictions, true and near-miss sanctions matches, PEPs, and benign look-alikes such as cash-intensive businesses, property sales and bonuses.
@@ -163,6 +165,20 @@ sentinel run --case CASE-G0001          # any alert in the data backend
 # Test console in the browser
 streamlit run devtools/streamlit_app.py
 ```
+
+### Run through Kafka (as in production)
+
+Alerts arrive on `aml.alerts.v1`. The worker investigates each case, sends progress to `aml.case-events.v1`, and pauses the case at human review, where its saved state in Postgres survives restarts. A decision on `aml.decisions.v1` then resumes the case. Duplicate alerts and late decisions are ignored safely. Messages that keep failing go to the dead-letter queue.
+
+```bash
+sentinel worker all --concurrency 4          # terminal 1: alert + decision workers
+sentinel kafka tail                          # terminal 2: live case events
+sentinel kafka publish --sample 10           # terminal 3: 10 alerts across all typologies
+sentinel kafka decide --accept               # accept the recommendation on every case awaiting review
+sentinel kafka decide CASE-G0013 --action escalate --reason-code PASS_THROUGH   # or decide one case
+```
+
+The workers run on the host because they need your AWS credentials for Bedrock. On AWS they run as containers that get credentials from their task role.
 
 Three hand-written cases are always available:
 
@@ -190,7 +206,7 @@ A JSON report is written to `evals/results/`.
 
 ```bash
 pytest                                  # offline: tools, rules, guards, graph, generator, MCP, policy (no AWS, no Docker)
-pytest -m integration                   # against the Docker stack: Postgres parity, OPA decisions, MCP over HTTP, auth
+pytest -m integration                   # against the Docker stack: Postgres parity, OPA, MCP over HTTP, Kafka round trip
 docker compose exec opa /opa test /policies -v      # Rego policy unit tests
 SENTINEL_LIVE=1 pytest -m live          # end to end against Bedrock, including the test console
 ```
@@ -212,11 +228,15 @@ src/sentinel/
 ├── hitl.py           # human-review interrupt and decision validation
 ├── schemas/          # Pydantic outputs and decision reason codes
 ├── prompts/          # versioned system prompts
+├── events.py         # Kafka message schemas (alerts, decisions, case events)
+├── kafka.py          # Kafka clients (local or MSK IAM), topics
+├── workers.py        # alert and decision workers
+├── persistence.py    # Postgres checkpointer and case status
 ├── evaluate.py       # batch evaluation against ground truth
-└── cli.py            # `sentinel run | data | eval`
+└── cli.py            # `sentinel run | data | eval | kafka | worker`
 mcp_servers/          # FastMCP servers (case_mgmt, kyc_profile, txn_history, screening) + Dockerfile
 guardrails/opa/       # Rego policy, agent tool allow-list, policy tests
-docker-compose.yml    # local stack: Postgres, OPA, MCP servers
+docker-compose.yml    # local stack: Postgres, Kafka + UI, OPA, MCP servers
 devtools/             # Streamlit test console (developer tool)
 data/fixtures/        # hand-written synthetic cases
 tests/                # offline, integration and live test suites

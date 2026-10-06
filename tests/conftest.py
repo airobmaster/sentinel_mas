@@ -1,6 +1,9 @@
 """Offline tests run on the JSON fixtures with in-process tools and no OPA, whatever .env says.
 Tests marked `live` or `integration` use the configured settings (e.g. the Docker stack)."""
 
+import asyncio
+import sys
+
 import pytest
 
 from sentinel import data
@@ -8,6 +11,13 @@ from sentinel.agents import factory
 from sentinel.config import REPO_ROOT, settings
 
 FIXTURES = REPO_ROOT / "data" / "fixtures" / "cases.json"
+
+
+def pytest_asyncio_loop_factories(config, item):
+    """psycopg's async driver (Postgres checkpointer) cannot use Windows' default Proactor loop."""
+    if sys.platform == "win32":
+        return {"selector": asyncio.SelectorEventLoop}
+    return None
 
 
 @pytest.fixture(autouse=True)

@@ -27,12 +27,14 @@ RULE = "-" * 72
 
 def specialist_line(agent: str, f: dict) -> str:
     if agent == "kyc":
-        return f"kyc: risk {f['risk_rating']}, {len(f['discrepancies'])} discrepancy(ies)"
+        return f"kyc: risk {f.get('risk_rating', '?')}, {len(f.get('discrepancies', []))} discrepancy(ies)"
     if agent == "txn":
-        return f"txn: {len(f['red_flags'])} red flag(s) {[r['code'] for r in f['red_flags']]}"
-    true_hits = [h["entry_id"] for h in f["hits"] if h["is_true_match"]]
-    media = [m["article_id"] for m in f["adverse_media"] if m["is_about_customer"]]
-    return (f"screening: {len(f['hits'])} list candidate(s), true matches {true_hits or 'none'}, "
+        flags = f.get("red_flags", [])
+        return f"txn: {len(flags)} red flag(s) {[r['code'] for r in flags]}"
+    hits = f.get("hits", [])
+    true_hits = [h["entry_id"] for h in hits if h["is_true_match"]]
+    media = [m["article_id"] for m in f.get("adverse_media", []) if m["is_about_customer"]]
+    return (f"screening: {len(hits)} list candidate(s), true matches {true_hits or 'none'}, "
             f"relevant media {media or 'none'}")
 
 
@@ -162,8 +164,86 @@ def print_eval(report: dict) -> None:
     print(f"\n{json.dumps(report['metrics'], indent=2)}\nReport: {report['path']}")
 
 
+async def kafka_publish(alerts: list[dict]) -> None:
+    from sentinel import kafka
+    from sentinel.events import ALERTS_TOPIC, AlertEvent
+
+    prod = kafka.producer()
+    await prod.start()
+    try:
+        for alert in alerts:
+            await kafka.send(prod, ALERTS_TOPIC, AlertEvent.model_validate(alert))
+            print(f"published alert {alert['case_id']}")
+    finally:
+        await prod.stop()
+
+
+async def kafka_decide(case_ids: list[str], action: str | None, reason_code: str | None, investigator: str,
+                       accept: bool) -> None:
+    """Publish decisions; with --accept, take each case's recommendation from its checkpoint."""
+    from sentinel import kafka
+    from sentinel.events import DECISIONS_TOPIC, DecisionEvent
+    from sentinel.persistence import durable_state
+
+    async with durable_state() as (checkpointer, cases):
+        graph = compile_graph(checkpointer=checkpointer)
+        if not case_ids:  # all cases waiting for review
+            async with cases.pool.connection() as conn:
+                rows = await (await conn.execute(
+                    "SELECT case_id FROM cases.alerts WHERE status = 'awaiting_review' ORDER BY case_id")).fetchall()
+            case_ids = [r["case_id"] for r in rows]
+        prod = kafka.producer()
+        await prod.start()
+        try:
+            for case_id in case_ids:
+                act, code = action, reason_code
+                if accept:
+                    snapshot = await graph.aget_state(run_config(case_id))
+                    if not snapshot.interrupts:
+                        print(f"skipped {case_id}: not waiting for review")
+                        continue
+                    packet = snapshot.interrupts[0].value
+                    act, code = packet["recommendation"], packet["reason_code"]
+                event = DecisionEvent(case_id=case_id, action=act, reason_code=code, investigator_id=investigator,
+                                      agree_with_recommendation=True if accept else None)
+                await kafka.send(prod, DECISIONS_TOPIC, event)
+                print(f"published decision {case_id}: {act} ({code})")
+        finally:
+            await prod.stop()
+
+
+async def kafka_tail(case_ids: set[str], from_beginning: bool) -> None:
+    from sentinel import kafka
+    from sentinel.events import CASE_EVENTS_TOPIC
+
+    consumer = kafka.consumer(CASE_EVENTS_TOPIC, group_id=None,
+                              auto_offset_reset="earliest" if from_beginning else "latest")
+    await consumer.start()
+    try:
+        async for msg in consumer:
+            event = kafka.decode(msg.value)
+            if case_ids and event["case_id"] not in case_ids:
+                continue
+            extra = event.get("detail") or (json.dumps(event["data"]) if event.get("data") else "")
+            print(f"{event['at'][11:19]} {event['case_id']:<11} {event['type']:<17} {event.get('node') or '':<12} {extra}")
+    finally:
+        await consumer.stop()
+
+
+async def run_workers(kind: str, concurrency: int) -> None:
+    from sentinel.persistence import durable_state
+    from sentinel.workers import HANDLERS, run_worker
+
+    async with durable_state() as (checkpointer, cases):
+        graph = compile_graph(checkpointer=checkpointer)
+        print(f"worker '{kind}' consuming {list(HANDLERS[kind])} (concurrency {concurrency}); Ctrl+C to stop")
+        await run_worker(graph, cases, HANDLERS[kind], concurrency)
+
+
 def main() -> None:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if sys.platform == "win32":  # psycopg's async driver cannot use the default Proactor loop on Windows
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     parser = argparse.ArgumentParser(prog="sentinel")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -182,6 +262,26 @@ def main() -> None:
     eval_p.add_argument("--n", type=int, default=20, help="Number of cases (stratified across typologies)")
     eval_p.add_argument("--concurrency", type=int, default=4)
     eval_p.add_argument("--cases", nargs="+", help="Run only these case IDs")
+
+    kafka_p = sub.add_parser("kafka", help="Kafka topics, alerts, decisions and case events")
+    kafka_sub = kafka_p.add_subparsers(dest="kafka_command", required=True)
+    kafka_sub.add_parser("init", help="Create the Sentinel topics")
+    pub_p = kafka_sub.add_parser("publish", help="Publish alerts from the data backend")
+    pub_p.add_argument("--cases", nargs="+", help="Case IDs to publish")
+    pub_p.add_argument("--sample", type=int, help="Publish N alerts stratified across typologies")
+    dec_p = kafka_sub.add_parser("decide", help="Publish human decisions")
+    dec_p.add_argument("cases", nargs="*", help="Case IDs (default: every case awaiting review)")
+    dec_p.add_argument("--accept", action="store_true", help="Take each case's recommendation")
+    dec_p.add_argument("--action", choices=list(REASON_CODES))
+    dec_p.add_argument("--reason-code")
+    dec_p.add_argument("--investigator", default="INV-0001")
+    tail_p = kafka_sub.add_parser("tail", help="Print case events as they arrive")
+    tail_p.add_argument("cases", nargs="*", help="Only these case IDs")
+    tail_p.add_argument("--from-beginning", action="store_true")
+
+    worker_p = sub.add_parser("worker", help="Run Kafka workers (agents on Bedrock, state in Postgres)")
+    worker_p.add_argument("kind", choices=["alerts", "decisions", "all"], nargs="?", default="all")
+    worker_p.add_argument("--concurrency", type=int, default=4, help="Cases processed in parallel")
 
     args = parser.parse_args()
     if args.command == "run":
@@ -208,6 +308,41 @@ def main() -> None:
         from sentinel.evaluate import evaluate
 
         print_eval(asyncio.run(evaluate(args.n, args.concurrency, args.cases)))
+    elif args.command == "kafka" and args.kafka_command == "init":
+        from sentinel.kafka import create_topics
+
+        created = asyncio.run(create_topics())
+        print(f"created: {created or 'nothing (all topics exist)'}")
+    elif args.command == "kafka" and args.kafka_command == "publish":
+        from sentinel.evaluate import stratified_sample
+
+        if args.cases:
+            alerts = [a for cid in args.cases if (a := data.get_alert(cid))]
+        elif args.sample:
+            alerts = stratified_sample(data.list_alerts(), data.ground_truth(), args.sample)
+        else:
+            parser.error("give --cases or --sample")
+        asyncio.run(kafka_publish(alerts))
+    elif args.command == "kafka" and args.kafka_command == "decide":
+        if not args.accept and not (args.action and args.reason_code):
+            parser.error("give --accept, or --action and --reason-code")
+        asyncio.run(kafka_decide(args.cases, args.action, args.reason_code, args.investigator, args.accept))
+    elif args.command == "kafka" and args.kafka_command == "tail":
+        try:
+            asyncio.run(kafka_tail(set(args.cases), args.from_beginning))
+        except KeyboardInterrupt:
+            pass
+    elif args.command == "worker":
+        import logging
+
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s",
+                            datefmt="%H:%M:%S")
+        for noisy in ("httpx", "aiokafka", "mcp", "botocore"):
+            logging.getLogger(noisy).setLevel(logging.WARNING)
+        try:
+            asyncio.run(run_workers(args.kind, args.concurrency))
+        except KeyboardInterrupt:
+            print("worker stopped")
 
 
 if __name__ == "__main__":

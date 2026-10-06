@@ -6,11 +6,12 @@ Each specialist runs in two phases:
 We do not use `response_format=ToolStrategy(...)`: it forces tool_choice="any" on every turn, and
 DeepSeek on Bedrock then re-calls the data tools forever instead of the output tool.
 
-Tools come from tools/registry.py (in-process or MCP). When settings.opa_url is set, every
-tool call is authorised by OPA first. PII, rails and budget middleware are added in later slices.
+Tools come from tools/registry.py: in-process (agent built once) or MCP (agent built per run on
+sessions that stay open for the run). When settings.opa_url is set, every tool call is
+authorised by OPA first. PII, rails and budget middleware are added in later slices.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from langchain.agents import create_agent
 from langchain_aws import ChatBedrockConverse
@@ -20,7 +21,7 @@ from pydantic import BaseModel
 from sentinel.config import settings
 from sentinel.middleware.opa import CASE_CONTEXT, opa_authorize
 from sentinel.prompts import load_prompt
-from sentinel.tools.registry import tools_for
+from sentinel.tools.registry import AGENT_TOOLS, tools_for
 
 FINALISE = (
     "Now return your final output in the required structure. Use only facts from this conversation and "
@@ -28,52 +29,52 @@ FINALISE = (
 )
 
 
-@dataclass(frozen=True)
+@dataclass
 class Specialist:
     name: str
     prompt: str
-    agent: object | None  # tool loop; None for agents without tools
+    model: ChatBedrockConverse
     extractor: object  # model bound to the output schema
     versions: dict  # recorded in state for audit
+    _local_agent: object | None = field(default=None, repr=False)
+
+    def build_agent(self, tools: list):
+        middleware = [opa_authorize(self.name)] if settings.opa_url else []
+        return create_agent(model=self.model, tools=tools, system_prompt=self.prompt,
+                            middleware=middleware, name=self.name)
 
 
 _specialists: dict[str, Specialist] = {}
 
 
-def build_specialist(name: str, model_id: str, tools: list, prompt_name: str, schema: type[BaseModel]) -> Specialist:
-    version, prompt = load_prompt(prompt_name)
-    model = ChatBedrockConverse(model=model_id, region_name=settings.aws_region, temperature=0)
-    middleware = [opa_authorize(name)] if settings.opa_url else []
-    agent = (
-        create_agent(model=model, tools=tools, system_prompt=prompt, middleware=middleware, name=name)
-        if tools
-        else None
-    )
-    return Specialist(
-        name=name,
-        prompt=prompt,
-        agent=agent,
-        extractor=model.with_structured_output(schema),
-        versions={"prompt": f"{prompt_name}@{version}", "model": model_id, "tools": settings.tool_mode},
-    )
-
-
-async def get_specialist(name: str, model_id: str, prompt_name: str, schema: type[BaseModel]) -> Specialist:
-    """Build once per process; tool loading is async because MCP tools are discovered over HTTP."""
+def get_specialist(name: str, model_id: str, prompt_name: str, schema: type[BaseModel]) -> Specialist:
     if name not in _specialists:
-        _specialists[name] = build_specialist(name, model_id, await tools_for(name), prompt_name, schema)
+        version, prompt = load_prompt(prompt_name)
+        model = ChatBedrockConverse(model=model_id, region_name=settings.aws_region, temperature=0)
+        _specialists[name] = Specialist(
+            name=name, prompt=prompt, model=model, extractor=model.with_structured_output(schema),
+            versions={"prompt": f"{prompt_name}@{version}", "model": model_id, "tools": settings.tool_mode},
+        )
     return _specialists[name]
+
+
+async def run_tool_loop(spec: Specialist, messages: list[BaseMessage]) -> list[BaseMessage]:
+    config = {"recursion_limit": settings.agent_recursion_limit}
+    if settings.tool_mode == "local":
+        if spec._local_agent is None:
+            async with tools_for(spec.name) as tools:
+                spec._local_agent = spec.build_agent(tools)
+        return (await spec._local_agent.ainvoke({"messages": messages}, config=config))["messages"]
+    async with tools_for(spec.name) as tools:  # MCP sessions stay open for this run only
+        return (await spec.build_agent(tools).ainvoke({"messages": messages}, config=config))["messages"]
 
 
 async def run_specialist(spec: Specialist, brief: str, legal_entity: str) -> tuple[BaseModel, list[BaseMessage]]:
     """Return (structured output, conversation messages)."""
     CASE_CONTEXT.set({"legal_entity": legal_entity})  # read by the OPA middleware in this task only
     messages: list[BaseMessage] = [HumanMessage(brief)]
-    if spec.agent is not None:
-        out = await spec.agent.ainvoke(
-            {"messages": messages}, config={"recursion_limit": settings.agent_recursion_limit}
-        )
-        messages = out["messages"]
+    if AGENT_TOOLS.get(spec.name):
+        messages = await run_tool_loop(spec, messages)
     result = await spec.extractor.ainvoke([SystemMessage(spec.prompt), *messages, HumanMessage(FINALISE)])
     return result, messages
 

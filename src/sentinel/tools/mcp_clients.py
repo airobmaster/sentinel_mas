@@ -1,10 +1,12 @@
-"""Load an agent's tools from the MCP servers over Streamable HTTP (TDD §8.3)."""
+"""MCP tools over Streamable HTTP (TDD §8.3), with one session per server for the life of a run."""
 
 import time
+from contextlib import AsyncExitStack, asynccontextmanager
 
 import jwt
 from langchain_core.tools import BaseTool
 from langchain_mcp_adapters.client import MultiServerMCPClient
+from langchain_mcp_adapters.tools import load_mcp_tools
 
 from sentinel.config import MCP_TOKEN_AUDIENCE, settings
 
@@ -19,14 +21,26 @@ def service_token(entities: tuple[str, ...] = ("UK", "ES")) -> str:
     return jwt.encode(claims, settings.mcp_dev_secret, algorithm="HS256")
 
 
-async def mcp_tools(servers: list[str], allowed: list[str]) -> list[BaseTool]:
+def client_for(servers: list[str]) -> MultiServerMCPClient:
     token = service_token()
-    client = MultiServerMCPClient(
+    return MultiServerMCPClient(
         {
             s: {"url": settings.mcp_urls[s], "transport": "streamable_http",
                 "headers": {"Authorization": f"Bearer {token}"}}
             for s in servers
         }
     )
-    # The adapter already returns server-side errors to the model as error ToolMessages.
-    return [t for t in await client.get_tools() if t.name in allowed]
+
+
+@asynccontextmanager
+async def session_tools(servers: list[str], allowed: list[str]):
+    """Yield the allowed tools bound to one open session per server. Without this, the adapter
+    opens a new session (and connection) for every tool call, which is slow under load.
+    The adapter returns server-side errors to the model as error ToolMessages."""
+    client = client_for(servers)
+    async with AsyncExitStack() as stack:
+        tools: list[BaseTool] = []
+        for server in servers:
+            session = await stack.enter_async_context(client.session(server))
+            tools += await load_mcp_tools(session)
+        yield [t for t in tools if t.name in allowed]

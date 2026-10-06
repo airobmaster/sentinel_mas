@@ -4,6 +4,8 @@ AGENT_TOOLS is the allow-list. It must match guardrails/opa/data.json (a test ch
 the client only loads these tools, and OPA denies anything else at call time.
 """
 
+from contextlib import asynccontextmanager
+
 from langchain_core.tools import BaseTool
 
 from sentinel.config import settings
@@ -27,12 +29,17 @@ AGENT_TOOLS: dict[str, list[str]] = {
 LOCAL_TOOLS: dict[str, BaseTool] = {t.name: t for t in [*KYC_TOOLS, *CASE_TOOLS, *TXN_TOOLS, *SCREENING_TOOLS]}
 
 
-async def tools_for(agent: str) -> list[BaseTool]:
-    allowed = AGENT_TOOLS.get(agent, [])
-    if not allowed:
-        return []
-    if settings.tool_mode == "local":
-        return [LOCAL_TOOLS[name] for name in allowed]
-    from sentinel.tools.mcp_clients import mcp_tools
+def local_tools_for(agent: str) -> list[BaseTool]:
+    return [LOCAL_TOOLS[name] for name in AGENT_TOOLS.get(agent, [])]
 
-    return await mcp_tools(AGENT_SERVERS[agent], allowed)
+
+@asynccontextmanager
+async def tools_for(agent: str):
+    """Yield the agent's tools for one run: in-process, or bound to open MCP sessions."""
+    if settings.tool_mode == "local" or not AGENT_TOOLS.get(agent):
+        yield local_tools_for(agent)
+        return
+    from sentinel.tools.mcp_clients import session_tools
+
+    async with session_tools(AGENT_SERVERS[agent], AGENT_TOOLS[agent]) as tools:
+        yield tools
