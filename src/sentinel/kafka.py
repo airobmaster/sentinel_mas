@@ -4,13 +4,13 @@ import asyncio
 import json
 import ssl
 
-from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
+from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
 from aiokafka.abc import AbstractTokenProvider
 from aiokafka.admin import AIOKafkaAdminClient, NewTopic
 from pydantic import BaseModel
 
 from sentinel.config import settings
-from sentinel.events import TOPICS
+from sentinel.events import CASE_EVENTS_TOPIC, TOPICS
 
 
 class MskIamTokenProvider(AbstractTokenProvider):
@@ -72,3 +72,43 @@ async def create_topics() -> list[str]:
 
 def decode(value: bytes) -> dict:
     return json.loads(value.decode())
+
+
+async def publish(topic: str, events: list[BaseModel]) -> None:
+    """Publish validated events (one short-lived producer; for tools and the console)."""
+    prod = producer()
+    await prod.start()
+    try:
+        for event in events:
+            await send(prod, topic, event)
+    finally:
+        await prod.stop()
+
+
+async def read_events(case_id: str | None = None) -> list[dict]:
+    """All case events currently on the topic (optionally for one case), oldest first."""
+    admin = AIOKafkaAdminClient(**connection_kwargs())
+    await admin.start()
+    try:
+        [meta] = await admin.describe_topics([CASE_EVENTS_TOPIC])
+    finally:
+        await admin.close()
+    parts = [TopicPartition(CASE_EVENTS_TOPIC, p["partition"]) for p in meta.get("partitions", [])]
+    if not parts:
+        return []
+    reader = AIOKafkaConsumer(**connection_kwargs(), group_id=None, enable_auto_commit=False)
+    await reader.start()
+    try:
+        reader.assign(parts)
+        await reader.seek_to_beginning(*parts)
+        end = await reader.end_offsets(parts)
+        events = []
+        while any([await reader.position(p) < end[p] for p in parts]):
+            for messages in (await reader.getmany(*parts, timeout_ms=1000)).values():
+                for m in messages:
+                    event = decode(m.value)
+                    if case_id is None or event["case_id"] == case_id:
+                        events.append(event)
+        return sorted(events, key=lambda e: e["at"])
+    finally:
+        await reader.stop()

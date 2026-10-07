@@ -8,23 +8,11 @@ import pytest
 from sentinel import workers
 from sentinel.config import REPO_ROOT, settings
 from sentinel.graph import compile_graph
+from tests import stubs
 
 ALERT = (REPO_ROOT / "data" / "fixtures" / "alerts" / "CASE-0001.json").read_text(encoding="utf-8")
 DECISION = json.dumps({"case_id": "CASE-0001", "action": "escalate", "reason_code": "STRUCTURING_CONFIRMED",
                        "investigator_id": "INV-0001"})
-
-
-def stub(agent: str, eid: str):
-    async def node(state):
-        return {"evidence": [{"id": eid, "source": "test", "agent": agent, "summary": "s"}],
-                "findings": {agent: {"stub": True}}}
-    return node
-
-
-async def narrative(state):
-    narrative.calls += 1
-    return {"narrative": {"summary": "s", "claims": [{"text": "c", "evidence_ids": ["txn:T1"]}],
-                          "recommendation": "escalate", "reason_code": "STRUCTURING_CONFIRMED", "open_questions": []}}
 
 
 class FakeCases:
@@ -40,15 +28,14 @@ class FakeCases:
 
 @pytest.fixture
 def env():
-    narrative.calls = 0
-    graph = compile_graph(nodes={"kyc": stub("kyc", "crm:N1"), "txn": stub("txn", "txn:T1"),
-                                 "screening": stub("screening", "list:X"), "narrative": narrative})
+    narrative = stubs.narrative(["txn:TXN-1006"])
+    graph = compile_graph(nodes=stubs.nodes(narrative=narrative))
     events = []
 
     async def publish(event):
         events.append(event)
 
-    return SimpleNamespace(graph=graph, events=events, publish=publish, cases=FakeCases())
+    return SimpleNamespace(graph=graph, events=events, publish=publish, cases=FakeCases(), narrative=narrative)
 
 
 def types(env):
@@ -66,7 +53,7 @@ async def test_alert_runs_to_review(env):
 async def test_duplicate_alert_is_ignored(env):
     await workers.handle_alert(env.graph, ALERT, env.publish, env.cases)
     assert await workers.handle_alert(env.graph, ALERT, env.publish, env.cases) == "duplicate"
-    assert narrative.calls == 1 and types(env)[-1] == "duplicate_ignored"
+    assert len(env.narrative.calls) == 1 and types(env)[-1] == "duplicate_ignored"
 
 
 async def test_decision_resumes_once(env):

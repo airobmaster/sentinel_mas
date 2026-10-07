@@ -1,5 +1,13 @@
 -- Sentinel synthetic data schemas (TDD §3.3). Recreated on every `sentinel data load`.
--- The LangGraph checkpoint tables (schema `sentinel`) are not touched.
+-- Case runs in the LangGraph checkpoint tables (schema `sentinel`) are cleared too, so case
+-- status and checkpoints stay consistent; the tables themselves are kept.
+
+DO $$
+BEGIN
+    IF to_regclass('sentinel.checkpoints') IS NOT NULL THEN
+        TRUNCATE sentinel.checkpoints, sentinel.checkpoint_blobs, sentinel.checkpoint_writes;
+    END IF;
+END $$;
 
 DROP SCHEMA IF EXISTS core, crm, lake, screening, cases CASCADE;
 CREATE SCHEMA core;
@@ -48,9 +56,17 @@ CREATE TABLE lake.transactions (
     branch               text,
     counterparty         text,
     counterparty_country text,
+    counterparty_account text,                          -- set for transfers between the bank's own accounts
     reference            text
 );
 CREATE INDEX transactions_account_date ON lake.transactions (account_id, txn_date);
+
+CREATE TABLE core.device_links (
+    customer_id text NOT NULL REFERENCES core.customers,
+    device_id   text NOT NULL,
+    device_type text NOT NULL,
+    PRIMARY KEY (customer_id, device_id)
+);
 
 CREATE TABLE screening.sanctions_list (
     entry_id    text PRIMARY KEY,
@@ -83,7 +99,8 @@ CREATE TABLE cases.alerts (
     customer_id  text NOT NULL REFERENCES core.customers,
     alert        jsonb NOT NULL,
     expected     jsonb,                                  -- ground truth for evaluation; never shown to agents
-    status       text NOT NULL DEFAULT 'new'
+    status       text NOT NULL DEFAULT 'new',
+    updated_at   timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE cases.history (

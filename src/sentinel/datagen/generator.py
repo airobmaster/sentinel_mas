@@ -51,8 +51,10 @@ TYPOLOGIES = {
     "BENIGN_PROPERTY_SALE": (10, "close", ["close", "request_info"]),
     "BENIGN_BONUS": (10, "close", ["close", "request_info"]),
     "SANCT_NEAR": (12, "close", ["close"]),
+    "MULE_RING": (6, "escalate", ["escalate"]),  # planted last (see generate), so earlier data is unchanged
 }
 BACKGROUND_CUSTOMERS = 220
+SHARED_HOUSEHOLD_DEVICES = 12  # benign pairs of background customers sharing one device
 
 
 class Generator:
@@ -63,7 +65,7 @@ class Generator:
         for i, f in enumerate(self.fakers.values()):
             f.seed_instance(seed + i)
         self.d: dict = {k: [] for k in ("customers", "accounts", "crm_notes", "sanctions_list", "pep_list",
-                                         "adverse_media", "transactions", "alerts", "case_history")}
+                                         "adverse_media", "transactions", "alerts", "case_history", "device_links")}
         self.d["ground_truth"] = {}
         self.counters: dict[str, int] = defaultdict(int)
         self.profile: dict[str, dict] = {}  # private generation details per customer
@@ -77,15 +79,23 @@ class Generator:
         return AS_OF - timedelta(days=self.rng.randint(back_min, back_max))
 
     def txn(self, cust: dict, d: date, direction: str, amount: float, channel: str, reference: str,
-            counterparty: str | None = None, branch: str | None = None, country: str | None = None) -> str:
+            counterparty: str | None = None, branch: str | None = None, country: str | None = None,
+            counterparty_account: str | None = None) -> str:
         txn_id = self.next_id("TXN-G", 6)
         self.d["transactions"].append({
             "txn_id": txn_id, "account_id": cust["account_ids"][0], "date": d.isoformat(),
             "direction": direction, "amount": round(amount, 2), "currency": self.profile[cust["customer_id"]]["currency"],
             "channel": channel, "branch": branch, "counterparty": counterparty,
-            "counterparty_country": country, "reference": reference,
+            "counterparty_country": country, "counterparty_account": counterparty_account, "reference": reference,
         })
         return txn_id
+
+    def amount_of(self, txn_id: str) -> float:
+        return next(t["amount"] for t in reversed(self.d["transactions"]) if t["txn_id"] == txn_id)
+
+    def link_device(self, cust: dict, device_id: str, device_type: str) -> None:
+        self.d["device_links"].append({"customer_id": cust["customer_id"], "device_id": device_id,
+                                       "device_type": device_type})
 
     def person(self, entity: str = "UK") -> str:
         f = self.fakers[entity]
@@ -389,6 +399,52 @@ class Generator:
                 if (AS_OF - closed).days <= 365:
                     c["prior_alerts_12m"] += 1
 
+    def plant_mule_ring(self) -> None:
+        """5-9 young customers sharing devices: each receives small payments from unrelated people and
+        forwards them to one aggregator member, who sends the total abroad."""
+        rng = self.rng
+        members = [self.new_customer(segment="retail", risk="low", entity="UK", job=("Student", 900),
+                                     min_age=18, max_age=26) for _ in range(rng.randint(5, 9))]
+        devices = [self.next_id("DEV-R", 3) for _ in range(rng.randint(1, 2))]
+        for m in members:
+            for device in devices:
+                self.link_device(m, device, "mobile")
+        aggregator, start = members[0], rng.randint(12, 40)
+        forwarded, alerted = 0.0, rng.choice(members[1:])
+        triggering: list[str] = []
+        for m in members[1:]:
+            credits = [self.txn(m, AS_OF - timedelta(days=start - rng.randint(0, 5)), "credit", rng.uniform(400, 1500),
+                                "transfer", rng.choice(["Thanks", "Rent share", "Payment", "For you"]), self.person())
+                       for _ in range(rng.randint(3, 6))]
+            amount = sum(self.amount_of(t) for t in credits) * rng.uniform(0.9, 0.97)
+            day = AS_OF - timedelta(days=start - 6)
+            out = self.txn(m, day, "debit", amount, "transfer", "Payment", aggregator["name"],
+                           counterparty_account=aggregator["account_ids"][0])
+            self.txn(aggregator, day, "credit", amount, "transfer", "Payment", m["name"],
+                     counterparty_account=m["account_ids"][0])
+            forwarded += amount
+            if m is alerted:
+                triggering = [*credits, out]
+        self.txn(aggregator, AS_OF - timedelta(days=start - 8), "debit", forwarded * 0.96, "transfer", "Invoice",
+                 self.fakers["UK"].company(), country=rng.choice(FOREIGN_COUNTRIES + HIGH_RISK_COUNTRIES))
+        self.alert("MULE_RING", alerted, ("TM-MULE-02", "Account sharing a device with other customers"),
+                   triggering, (0.7, 0.95))
+
+    def assign_devices(self) -> None:
+        """Every customer without a planted device gets 1-2 of their own; a few households share one."""
+        rng = random.Random(self.seed + 7)  # separate stream: device data never shifts other data
+        linked = {link["customer_id"] for link in self.d["device_links"]}
+        unlinked = [c for c in self.d["customers"] if c["customer_id"] not in linked]
+        alerted = {a["customer_id"] for a in self.d["alerts"]}
+        households = rng.sample([c for c in unlinked if c["customer_id"] not in alerted], SHARED_HOUSEHOLD_DEVICES * 2)
+        for a, b in zip(households[::2], households[1::2]):
+            device = self.next_id("DEV-H", 3)
+            self.link_device(a, device, "tablet")
+            self.link_device(b, device, "tablet")
+        for c in unlinked:
+            for _ in range(rng.choice([1, 1, 2])):
+                self.link_device(c, self.next_id("DEV-G", 4), rng.choice(["mobile", "laptop"]))
+
     def generate(self) -> dict:
         planters = {
             "STRUCT": self.plant_struct, "PASSTHRU": self.plant_passthru, "MULE": self.plant_mule,
@@ -397,13 +453,16 @@ class Generator:
             "BENIGN_BONUS": self.plant_bonus, "SANCT_NEAR": self.plant_sanct_near,
         }
         for typology, (count, _, _) in TYPOLOGIES.items():
-            for _ in range(count):
+            for _ in range(count if typology in planters else 0):
                 planters[typology]()
         background = [self.new_customer() for _ in range(BACKGROUND_CUSTOMERS)]
         for c in self.rng.sample(background, 15):
             self.noise_article(c)
         self.filler_lists()
         self.case_history(self.d["customers"])
+        for _ in range(TYPOLOGIES["MULE_RING"][0]):  # after everything else: earlier data is unchanged
+            self.plant_mule_ring()
+        self.assign_devices()
         self.d["meta"] = {"seed": self.seed, "as_of": AS_OF.isoformat(),
                           "counts": {k: len(v) for k, v in self.d.items() if isinstance(v, list)}}
         return self.d

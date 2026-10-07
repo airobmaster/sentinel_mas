@@ -70,7 +70,8 @@ services:
 
   opa:
     image: openpolicyagent/opa:latest
-    command: ["run", "--server", "--addr", "0.0.0.0:8181", "--log-level", "info", "/policies"]
+    # --watch reloads tools.rego / data.json when they change, so the running allow-list never goes stale
+    command: ["run", "--server", "--watch", "--addr", "0.0.0.0:8181", "--log-level", "info", "/policies"]
     volumes: ["./guardrails/opa:/policies:ro"]
     ports: ["8181:8181"]
 
@@ -93,6 +94,32 @@ services:
     <<: *mcp-server
     command: ["screening"]
     ports: ["8104:8000"]
+
+  mcp-graph-query:
+    <<: *mcp-server
+    command: ["graph_query"]
+    ports: ["8105:8000"]
+    environment:
+      SENTINEL_DATA_BACKEND: postgres
+      SENTINEL_PG_DSN: postgresql://sentinel:sentinel@postgres:5432/sentinel
+      SENTINEL_MCP_DEV_SECRET: ${SENTINEL_MCP_DEV_SECRET:-dev-only-signing-key-not-for-production}
+      # Neo4j runs on the host (Neo4j Desktop). bolt:// avoids routing to the host's 127.0.0.1.
+      SENTINEL_NEO4J_URI: ${SENTINEL_NEO4J_CONTAINER_URI:-bolt://host.docker.internal:7687}
+      SENTINEL_NEO4J_USER: ${SENTINEL_NEO4J_USER:-neo4j}
+      SENTINEL_NEO4J_PASSWORD: ${SENTINEL_NEO4J_PASSWORD:-}
+
+  mcp-policy-kb:
+    <<: *mcp-server
+    command: ["policy_kb"]
+    ports: ["8106:8000"]
+    environment:
+      SENTINEL_DATA_BACKEND: postgres
+      SENTINEL_PG_DSN: postgresql://sentinel:sentinel@postgres:5432/sentinel
+      SENTINEL_MCP_DEV_SECRET: ${SENTINEL_MCP_DEV_SECRET:-dev-only-signing-key-not-for-production}
+      SENTINEL_AWS_REGION: ${SENTINEL_AWS_REGION:-eu-west-2}
+      AWS_REGION: ${SENTINEL_AWS_REGION:-eu-west-2}
+    # Dev only: query embeddings use your local AWS login. On AWS the task role provides credentials.
+    volumes: ["${USERPROFILE:-${HOME}}/.aws:/home/mcp/.aws"]
 
 volumes:
   pgdata:

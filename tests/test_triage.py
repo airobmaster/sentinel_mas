@@ -39,4 +39,5 @@ async def test_triage_structuring_case_is_fast_lane():
     out = await triage(initial_state(load("CASE-0001")))
     assert out["tier"] == "fast"
     assert out["findings"]["triage"]["triggering_total"] == 47_550
-    assert out["evidence"][0]["id"] == "cust:CUST-00042"
+    assert [e["id"] for e in out["evidence"]] == ["alert:CASE-0001", "cust:CUST-00042"]
+    assert "5 triggering transaction(s) totalling 47,550.00" in out["evidence"][0]["summary"]

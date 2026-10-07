@@ -25,11 +25,13 @@ Sentinel automates the **evidence-gathering and drafting** part of an investigat
 
 For each alert, Sentinel:
 
-1. **Triages** the alert into a fast or a full investigation lane, using deterministic business rules.
-2. **Gathers evidence in parallel** with specialist agents for customer context (KYC), transactions and screening, each using fixed, read-only tools.
-3. **Drafts a narrative** in which every factual claim cites an evidence ID that a tool actually returned.
-4. **Checks its own work**: code guards verify citations and completeness, and a failed check sends the work back for one rework.
-5. **Pauses for a human investigator**, who reviews the evidence pack and recommendation, then decides: *close*, *escalate* or *request information*.
+1. **Receives the alert** from the transaction-monitoring stream (Kafka) and starts one durable, checkpointed investigation per case.
+2. **Triages** the alert into a fast or a full investigation lane, using deterministic business rules.
+3. **Gathers evidence in parallel** with specialist agents for customer context (KYC), transactions and screening. Each agent uses fixed, read-only tools, and a policy engine authorises every call. In the full lane, a network agent also examines links to other customers in a graph database.
+4. **Maps the findings to AML typologies and the bank's written procedure**, citing versioned policy sections, and makes the recommendation.
+5. **Drafts a narrative** that explains the recommendation, in which every factual claim cites an evidence ID that a tool actually returned.
+6. **Checks its own work.** Code guards verify citations and completeness. An independent LLM critic, running on a different model, then reviews the case. Serious issues send the work back for one rework.
+7. **Pauses for a human investigator**, who reviews the evidence pack and recommendation, then decides: *close*, *escalate* or *request information*. The decision comes back on the stream and completes the case.
 
 ### Why an agentic system?
 
@@ -43,6 +45,38 @@ For each alert, Sentinel:
 - It never changes customer data.
 - It never writes free-form SQL or graph queries. All data access goes through fixed, parameterised tools.
 - It never presents a claim without an evidence ID that exists in the case.
+
+---
+
+## Current status
+
+Sentinel is being built in thin end-to-end slices, each tested before the next widens it.
+
+**Working today**
+- The **end-to-end flow** from a Kafka alert to the investigator's decision. Case state is saved in Postgres, so paused cases survive restarts. Duplicate alerts and late decisions are handled safely, and messages that keep failing go to a dead-letter queue.
+- **The full squad of eight graph steps:**
+  - triage (rules);
+  - KYC context, transaction analytics and screening, run in parallel;
+  - network analysis (full lane, Neo4j with Graph Data Science);
+  - typology & policy, using hybrid search over versioned policy manuals in English and Spanish;
+  - the narrative;
+  - QA (code checks plus an independent LLM critic), with one rework loop.
+- **Tools behind MCP servers.** Each agent gets only its own tools, every call is authorised by an OPA policy, and every request is scoped to the case's legal entity.
+- A **synthetic dataset** with planted typologies (including device-sharing mule rings) and known outcomes, loaded into Postgres and Neo4j.
+- **Batch evaluation** against those known outcomes, reporting escalation recall, false escalations and citation validity. On a 24-case sample spanning every typology, run on the full stack:
+  - every must-escalate case was escalated;
+  - no benign case was escalated;
+  - every outcome was acceptable;
+  - every claim cited real evidence.
+- **Tests:** offline, integration (Docker stack) and live (Bedrock), plus a Streamlit test console for developers.
+
+**Planned**
+- PII and prompt-injection guardrails.
+- Approval steps for high-impact tool calls and customer follow-up requests.
+- Scheduled batch jobs (Airflow).
+- An API and the React investigator workbench.
+- Observability.
+- Deployment to AWS.
 
 ---
 
@@ -78,10 +112,10 @@ Each case is one run of a LangGraph `StateGraph`. The run is checkpointed, so it
 | **KYC context** | Reads the customer profile, relationship notes and prior case history, compares the alerted activity with expected activity, and lists discrepancies. | Activity is only suspicious relative to who the customer is. A note such as "customer is selling their car" can explain a large credit. | Implemented |
 | **Transaction analytics** | Uses deterministic detectors (structuring, pass-through, velocity, cash ratio, distinct senders) and reviews the transactions, reporting red flags with transaction IDs. | Patterns such as repeated deposits just under a threshold are the core of many typologies. Detector tools keep the numbers reproducible. | Implemented |
 | **Screening** | Fuzzy-matches the customer against sanctions and PEP lists and searches adverse media. It decides true or false matches using date of birth, nationality and context. | Name matches are noisy. Most hits are near-misses that must be ruled out with reasons, while a true match changes the case outcome. | Implemented |
-| **Network** *(full lane)* | Expands counterparties and shared devices in a graph database and scores mule-ring risk. | Some laundering only shows up across many accounts, not within one customer. | Planned |
-| **Typology & policy** | Maps the findings to AML typologies and the relevant internal procedure, citing policy versions. | Recommendations must rest on documented policy, not on model opinion. | Planned (the narrative recommends for now) |
-| **Narrative** | Writes the case summary and claims, each citing evidence IDs, plus a recommendation, reason code and open questions. | Investigators need a clear, consistent write-up that they can check line by line against the evidence. | Implemented |
-| **QA critic** | Checks completeness and citations and can send work back to a named agent once. If issues remain, they go to the human with the issues attached. | Every case gets automated QA, not a small sample, and a weak case never reaches the investigator silently. | Code checks implemented; LLM critic (a different model from the narrative) planned |
+| **Network** *(full lane)* | Finds customers linked through shared devices or transfers in Neo4j (at most 2 hops and 50 customers) and reads each one's community and mule score. The scores are computed with Graph Data Science. It then assesses: isolated, benign links, or a suspected mule network. | Some laundering only shows up across many accounts, not within one customer. | Implemented |
+| **Typology & policy** | Maps the findings to AML typologies and the bank's written procedure for the legal entity, citing versioned sections (e.g. `policy:AML-UK@3.2#4.3`). It sets the risk score and **makes the recommendation**. | Recommendations must rest on documented policy, not on model opinion. | Implemented |
+| **Narrative** | Explains the typology recommendation in a case summary whose claims each cite evidence IDs, with the reason code and open questions. | Investigators need a clear, consistent write-up that they can check line by line against the evidence. | Implemented |
+| **QA critic** | Code checks verify completeness (the lane's checklist), citations and agreement with the recommendation. Then an independent LLM critic on a different model (Claude Haiku 4.5) checks that claims are supported, red flags are covered and there's no tipping-off. Serious issues send work back to the named agent once. | Every case gets automated QA, not a small sample, and a weak case never reaches the investigator silently. | Implemented |
 
 ### Design principles
 
@@ -100,7 +134,9 @@ Each case is one run of a LangGraph `StateGraph`. The run is checkpointed, so it
 | Area | Technology | Status |
 |---|---|---|
 | Agent orchestration | LangGraph (`StateGraph`, checkpointer, `interrupt`), LangChain `create_agent` | In use |
-| Models | AWS Bedrock via `langchain-aws` (`ChatBedrockConverse`); DeepSeek V3.2 by default, configurable per agent | In use |
+| Models | AWS Bedrock via `langchain-aws` (`ChatBedrockConverse`): DeepSeek V3.2 for the specialists and narrative, Claude Haiku 4.5 for the independent QA critic; configurable per agent | In use |
+| Policy knowledge base | Versioned policy manuals (UK in English, ES in Spanish) and a typology guide, chunked by section; Cohere Multilingual v3 embeddings on Bedrock; hybrid search in pgvector (vector + full text, reciprocal-rank fusion) | In use |
+| Graph analytics | Neo4j with Graph Data Science (connected components, Louvain communities) and a rule-based mule score; `networkx` fallback | In use |
 | Structured outputs | Pydantic schemas for every agent | In use |
 | Name screening | RapidFuzz fuzzy matching | In use |
 | Tools layer | MCP servers (FastMCP, Streamable HTTP) + `langchain-mcp-adapters`; dev JWT service tokens | In use |
@@ -114,8 +150,7 @@ Each case is one run of a LangGraph `StateGraph`. The run is checkpointed, so it
 | Event streaming | Apache Kafka (KRaft) + Kafka UI: alerts in, decisions back, case events out, dead-letter queue; `aiokafka` workers; MSK IAM auth switch for AWS | In use |
 | Durable runs | LangGraph `AsyncPostgresSaver`: cases pause for days at human review and survive restarts | In use |
 | Scheduling | Apache Airflow (list refreshes, graph rebuilds, alert replay) | Planned |
-| More data stores | pgvector policy search, Neo4j + GDS (networks) | Planned |
-| Documents | Docling (policy manuals → searchable chunks) | Planned |
+| Documents | Docling for PDF/Word policy manuals (Markdown manuals are chunked directly today) | Planned |
 | Guardrails | Presidio (PII), prompt-injection rails | Planned |
 | API & UI | FastAPI service, React investigator workbench | Planned |
 | Evaluation tooling | DeepEval, Promptfoo, LangSmith experiments | Planned |
@@ -142,16 +177,26 @@ Settings can be overridden with environment variables or a `.env` file, for exam
 
 | Mode | What runs | Setup |
 |---|---|---|
-| **In-process** (default) | Tools run inside the agent process on JSON datasets. No Docker needed. | Nothing extra |
-| **Full stack** | Postgres, Kafka, OPA and four MCP tool servers in Docker; agents call tools over MCP, and OPA authorises every call | See below |
+| **In-process** (default) | Tools run inside the agent process on JSON datasets, with an in-memory graph and keyword policy search. No Docker needed. | Nothing extra |
+| **Full stack** | Postgres (+pgvector), Kafka, OPA and six MCP tool servers in Docker, plus Neo4j with Graph Data Science (e.g. Neo4j Desktop). Agents call tools over MCP, and OPA authorises every call | See below |
 
 ```bash
 docker compose up -d --build     # Postgres, Kafka + UI (localhost:8080), OPA, MCP servers
-cp .env.example .env             # data=postgres, tools=mcp, OPA on, local Kafka
+cp .env.example .env             # data=postgres, tools=mcp, OPA on, local Kafka; add your Neo4j connection
 sentinel data generate           # synthetic dataset -> data/generated/dataset.json
 sentinel data load               # fixtures + generated dataset -> Postgres
+sentinel data kb                 # policy documents -> embeddings in pgvector (Cohere Multilingual v3)
+sentinel data graph              # customer network -> Neo4j, scored with Graph Data Science
 sentinel kafka init              # create the topics
 ```
+
+**On Windows, one click:** `start_sentinel.bat` does all of the following:
+1. checks Docker and your AWS login;
+2. starts the containers and creates the Kafka topics;
+3. opens the Kafka worker in its own terminal window;
+4. starts the test console and opens it in a new browser window.
+
+Use `start_sentinel.bat setup` the first time, or to regenerate and reload the data.
 
 The generator is seeded, so every run produces the same data. It creates around 300 customers, 18,000 transactions and 85 alerts. Each alert has a planted pattern with a known correct outcome: structuring, pass-through, mule activity, high-risk jurisdictions, true and near-miss sanctions matches, PEPs, and benign look-alikes such as cash-intensive businesses, property sales and bonuses.
 
@@ -165,6 +210,27 @@ sentinel run --case CASE-G0001          # any alert in the data backend
 # Test console in the browser
 streamlit run devtools/streamlit_app.py
 ```
+
+The test console has two modes with the same three views:
+- **Case:** the review packet and the decision form.
+- **Work queue:** cases by status.
+- **Event stream:** case events.
+
+The case view adds two more tabs:
+- **Typology & policy:** the cited policy sections.
+- **Network:** a diagram of linked customers and shared devices.
+
+The header shows which knowledge sources are live: the graph (Neo4j or in-memory) and the policy knowledge base (pgvector or keyword search).
+
+The modes differ in where the case runs:
+- **Direct (in-process):** runs alerts inside the console, with no Docker needed. The queue and event stream cover this browser session.
+- **Kafka (full stack):**
+  - publishes the alert to Kafka and shows the worker's progress live;
+  - opens the review packet from the Postgres checkpointer;
+  - sends your decision back through Kafka;
+  - has buttons to re-send an alert or a decision, to show they are ignored safely.
+
+  It needs `sentinel worker all` running.
 
 ### Run through Kafka (as in production)
 
@@ -223,6 +289,8 @@ src/sentinel/
 ├── tools/            # read-only tool functions, per-agent allow-list, MCP client
 ├── middleware/       # OPA authorisation of every tool call
 ├── repo/             # data access: JSON datasets or Postgres, same interface
+├── kb.py             # policy knowledge base: chunking, embeddings, hybrid search
+├── graphdb.py        # customer network: Neo4j (+GDS) or in-memory, mule scores
 ├── datagen/          # seeded synthetic data generator, Postgres schema and loader
 ├── guards/           # citation and completeness checks
 ├── hitl.py           # human-review interrupt and decision validation
@@ -239,6 +307,7 @@ guardrails/opa/       # Rego policy, agent tool allow-list, policy tests
 docker-compose.yml    # local stack: Postgres, Kafka + UI, OPA, MCP servers
 devtools/             # Streamlit test console (developer tool)
 data/fixtures/        # hand-written synthetic cases
+data/policies/        # versioned synthetic policy manuals (UK, ES) and the typology guide
 tests/                # offline, integration and live test suites
 docs/                 # design documents
 ```

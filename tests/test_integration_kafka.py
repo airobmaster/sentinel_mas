@@ -8,12 +8,13 @@ import uuid
 
 import pytest
 
-from sentinel import kafka
+from sentinel import kafka, persistence
 from sentinel.config import REPO_ROOT
 from sentinel.events import ALERTS_TOPIC, CASE_EVENTS_TOPIC, DECISIONS_TOPIC, AlertEvent, DecisionEvent
 from sentinel.graph import compile_graph, run_config
 from sentinel.persistence import durable_state
 from sentinel.workers import HANDLERS, run_worker
+from tests import stubs
 
 pytestmark = [
     pytest.mark.integration,
@@ -22,20 +23,7 @@ pytestmark = [
 ]
 
 
-def stub(agent: str, eid: str):
-    async def node(state):
-        return {"evidence": [{"id": eid, "source": "test", "agent": agent, "summary": "s"}],
-                "findings": {agent: {"stub": True}}}
-    return node
-
-
-async def narrative(state):
-    return {"narrative": {"summary": "s", "claims": [{"text": "c", "evidence_ids": ["txn:T1"]}],
-                          "recommendation": "escalate", "reason_code": "STRUCTURING_CONFIRMED", "open_questions": []}}
-
-
-STUBS = {"kyc": stub("kyc", "crm:N1"), "txn": stub("txn", "txn:T1"), "screening": stub("screening", "list:X"),
-         "narrative": narrative}
+STUBS = stubs.nodes()
 
 
 async def wait_for(consumer, case_id: str, event_type: str, timeout: float = 60) -> dict:
@@ -77,6 +65,16 @@ async def test_alert_and_decision_round_trip_through_kafka():
 
             final = await graph.aget_state(run_config(case_id))  # state survives in Postgres
             assert final.values["decision"]["investigator_id"] == "INV-IT" and final.next == ()
+
+            # Helpers used by the console and scripts
+            types = [e["type"] for e in await kafka.read_events(case_id)]
+            assert types[0] == "case_started" and types[-1] == "decision_applied"
+            assert {"awaiting_review", "duplicate_ignored"} <= set(types)
+            assert persistence.case_status(case_id) == "escalated"
+            assert case_id in [r["case_id"] for r in persistence.list_cases(["escalated"])]
+            persistence.reset_case(case_id)
+            assert persistence.case_status(case_id) == "new"
+            assert not (await graph.aget_state(run_config(case_id))).values
         finally:
             stop.set()
             await asyncio.wait_for(worker, 15)

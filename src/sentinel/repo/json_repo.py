@@ -6,7 +6,7 @@ from pathlib import Path
 
 LIST_KEYS = (
     "customers", "accounts", "crm_notes", "sanctions_list", "pep_list",
-    "adverse_media", "transactions", "alerts", "case_history",
+    "adverse_media", "transactions", "alerts", "case_history", "device_links",
 )
 
 
@@ -35,6 +35,7 @@ def merge_datasets(paths: list[Path]) -> dict:
         data["ground_truth"].update(part.get("ground_truth", {}))
     for t in data["transactions"]:
         t.setdefault("counterparty_country", None)
+        t.setdefault("counterparty_account", None)
     return data
 
 
@@ -86,3 +87,24 @@ class JsonRepo:
 
     def ground_truth(self) -> dict[str, dict]:
         return self.data["ground_truth"]
+
+    # --- graph sources (network analysis) -------------------------------------------------------
+    def all_customers(self) -> list[dict]:
+        return list(self._customers.values())
+
+    def device_links(self) -> list[dict]:
+        return self.data["device_links"]
+
+    def internal_transfers(self) -> list[dict]:
+        """Debits paid to another of the bank's accounts: account_id -> counterparty_account."""
+        return [t for t in self.data["transactions"] if t["counterparty_account"] and t["direction"] == "debit"]
+
+    def distinct_senders(self, as_of: str, lookback_days: int) -> dict[str, int]:
+        """Per account: distinct counterparties that sent credits in the window (fan-in)."""
+        end = date.fromisoformat(as_of[:10])
+        start = end - timedelta(days=lookback_days)
+        senders: dict[str, set] = {}
+        for t in self.data["transactions"]:
+            if t["direction"] == "credit" and t["counterparty"] and start < date.fromisoformat(t["date"]) <= end:
+                senders.setdefault(t["account_id"], set()).add(t["counterparty"])
+        return {acct: len(s) for acct, s in senders.items()}

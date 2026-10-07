@@ -21,6 +21,8 @@ def describe(t: dict) -> str:
         text += f", counterparty {t['counterparty']}"
         if t.get("counterparty_country"):
             text += f" ({t['counterparty_country']})"
+        if t.get("counterparty_account"):
+            text += f" (their account {t['counterparty_account']} held at this bank)"
     return f"{text}, ref '{t['reference']}'"
 
 

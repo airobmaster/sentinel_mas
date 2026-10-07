@@ -18,7 +18,9 @@ from langchain_core.tools import ToolException
 
 from sentinel.config import MCP_TOKEN_AUDIENCE, settings
 from sentinel.tools.case_tools import CASE_FUNCTIONS
+from sentinel.tools.graph_tools import GRAPH_FUNCTIONS
 from sentinel.tools.kyc_tools import KYC_FUNCTIONS
+from sentinel.tools.policy_tools import POLICY_FUNCTIONS
 from sentinel.tools.screening_tools import SCREENING_FUNCTIONS
 from sentinel.tools.txn_tools import TXN_FUNCTIONS
 
@@ -27,6 +29,8 @@ SERVERS = {
     "kyc_profile": KYC_FUNCTIONS,
     "txn_history": TXN_FUNCTIONS,
     "screening": SCREENING_FUNCTIONS,
+    "graph_query": GRAPH_FUNCTIONS,
+    "policy_kb": POLICY_FUNCTIONS,
 }
 
 

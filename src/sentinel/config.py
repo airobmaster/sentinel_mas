@@ -20,7 +20,23 @@ class Settings(BaseSettings):
     model_kyc: str = "deepseek.v3.2"
     model_txn: str = "deepseek.v3.2"
     model_screening: str = "deepseek.v3.2"
+    model_network: str = "deepseek.v3.2"
+    model_typology: str = "deepseek.v3.2"
     model_narrative: str = "deepseek.v3.2"
+    model_qa: str = "eu.anthropic.claude-haiku-4-5-20251001-v1:0"  # must differ from the narrative model
+    qa_llm_critic: bool = True  # code checks always run; the LLM critic can be switched off (offline tests)
+    model_embedding: str = "cohere.embed-multilingual-v3"  # 1024 dims, English + Spanish policies
+
+    # Policy documents (chunked into the knowledge base)
+    policy_dir: Path = REPO_ROOT / "data" / "policies"
+
+    # Graph (Neo4j). Unset URI = in-memory graph built from the dataset (offline tests, in-process mode).
+    neo4j_uri: str | None = None
+    neo4j_user: str = "neo4j"
+    neo4j_password: str = ""
+    neo4j_database: str = "neo4j"
+    graph_as_of: str = "2026-03-31"  # reference date of the synthetic dataset for network scores
+    graph_lookback_days: int = 90
 
     # Data: "json" reads dataset files (no services needed); "postgres" reads the loaded database.
     data_backend: Literal["json", "postgres"] = "json"
@@ -37,6 +53,8 @@ class Settings(BaseSettings):
         "kyc_profile": "http://localhost:8102/mcp/",
         "txn_history": "http://localhost:8103/mcp/",
         "screening": "http://localhost:8104/mcp/",
+        "graph_query": "http://localhost:8105/mcp/",
+        "policy_kb": "http://localhost:8106/mcp/",
     }
     mcp_require_auth: bool = True  # servers reject calls without a valid service token
     mcp_dev_secret: str = "dev-only-signing-key-not-for-production"  # HS256 dev tokens (TDD §8.1 [LOCAL])

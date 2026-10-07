@@ -18,6 +18,8 @@ def validate_decision(decision: dict) -> None:
 
 async def human_review(state: CaseState) -> dict:
     narrative = state.get("narrative") or {}
+    # The Typology & Policy agent makes the recommendation (the narrative carries the same one).
+    source = state.get("findings", {}).get("typology") or narrative
     decision = interrupt(
         {
             "case_id": state["case_id"],
@@ -26,9 +28,8 @@ async def human_review(state: CaseState) -> dict:
             "evidence": state.get("evidence", []),
             "findings": state.get("findings", {}),
             "qa_issues": state.get("qa_issues", []),
-            # Slice 1: the narrative recommends; the typology agent takes this over later.
-            "recommendation": narrative.get("recommendation"),
-            "reason_code": narrative.get("reason_code"),
+            "recommendation": source.get("recommendation"),
+            "reason_code": source.get("reason_code"),
             "allowed_actions": list(REASON_CODES),
         }
     )

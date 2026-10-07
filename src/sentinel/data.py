@@ -61,3 +61,20 @@ def list_alerts() -> list[dict]:
 
 def ground_truth() -> dict[str, dict]:
     return backend().ground_truth()
+
+
+# --- Graph sources (network analysis) -------------------------------------------------------------
+def all_customers() -> list[dict]:
+    return backend().all_customers()
+
+
+def device_links() -> list[dict]:
+    return backend().device_links()
+
+
+def internal_transfers() -> list[dict]:
+    return backend().internal_transfers()
+
+
+def distinct_senders(as_of: str, lookback_days: int) -> dict[str, int]:
+    return backend().distinct_senders(as_of, lookback_days)
