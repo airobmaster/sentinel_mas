@@ -67,6 +67,12 @@ html, body, .stApp, .stMarkdown, p, li, label, input, textarea, button, h1, h2, 
 .sn-badge { background: rgba(255,255,255,.14); border: 1px solid rgba(255,255,255,.3); border-radius: 999px;
     padding: 4px 11px; font-size: 12px; font-weight: 500; white-space: nowrap; }
 .sn-badge b { font-weight: 700; }
+.sn-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
+.sn-dot.up { background: #4ADE80; box-shadow: 0 0 0 2px rgba(74, 222, 128, .25); }
+.sn-dot.down { background: #FBBF24; box-shadow: 0 0 0 2px rgba(251, 191, 36, .25); }
+.sn-legend { color: #5A6B7F; font-size: 12.5px; margin: 2px 0 10px; }
+.sn-legend i { display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin: 0 4px -1px 12px;
+    border: 1px solid #94A3B8; }
 .sn-case-title { font-size: 22px; font-weight: 700; color: #0B2545; margin: 6px 0 2px; }
 .sn-case-sub { color: #5A6B7F; font-size: 14px; margin-bottom: 12px; }
 .sn-pill { display: inline-block; padding: 3px 11px; border-radius: 999px; font-size: 12.5px; font-weight: 600;
@@ -98,11 +104,22 @@ def pill(status: str | None) -> str:
     return f'<span class="sn-pill {status or "new"}">{label}</span>'
 
 
+@st.cache_data(ttl=30, show_spinner=False)
+def knowledge_sources() -> dict[str, tuple[str, bool]]:
+    """Which graph and policy-search backends answer, and whether they are up (checked every 30 s)."""
+    from sentinel import graphdb, kb
+
+    return {"Graph": graphdb.describe_backend(), "Policy KB": kb.describe_backend()}
+
+
 def header(mode: str) -> None:
     opa = "on" if settings.opa_url else "off"
     badges = [("Mode", "Kafka" if mode == KAFKA else "Direct"), ("Data", settings.data_backend),
               ("Tools", settings.tool_mode.upper()), ("Policy (OPA)", opa), ("Model", settings.model_narrative)]
     badge_html = "".join(f'<span class="sn-badge">{k}: <b>{v}</b></span>' for k, v in badges)
+    badge_html += "".join(
+        f'<span class="sn-badge"><span class="sn-dot {"up" if live else "down"}"></span>{k}: <b>{label}</b></span>'
+        for k, (label, live) in knowledge_sources().items())
     # Keep the HTML on unindented lines: Markdown renders 4-space-indented lines as a code block.
     st.markdown(CSS, unsafe_allow_html=True)
     st.markdown(
@@ -211,7 +228,7 @@ def render_case(alert: dict, status: str | None, values: dict, packet: dict | No
     with typology_tab:
         render_typology(typology, evidence)
     with network_tab:
-        render_network(findings.get("network"), values.get("tier"), evidence)
+        render_network(findings.get("network"), values.get("tier"), evidence, alert["customer_id"])
     with findings_tab:
         for agent in ("triage", "kyc", "txn", "screening", "network", "typology", "qa"):
             if agent in findings:
@@ -249,11 +266,31 @@ def render_typology(typology: dict, evidence: dict) -> None:
             st.markdown(f"- `{ref}` — {e['summary'] if e else '**not in evidence**'}")
 
 
-def render_network(network: dict | None, tier: str | None, evidence: dict) -> None:
+LEGEND = ('<div class="sn-legend">Customers by mule score:<i style="background:#F8B4B4"></i>0.6 or more'
+          '<i style="background:#FCE7B2"></i>0.3–0.6<i style="background:#E2E8F0"></i>below 0.3'
+          '<i style="background:#DBEAFE"></i>shared device · dashed line = transfer · bold outline = this case</div>')
+
+
+def render_network_diagram(customer_id: str) -> None:
+    """Drawn from the graph itself (not from the agent's summary), so it always shows the real links."""
+    from sentinel.graphdb import network_dot
+
+    try:
+        dot = network_dot(customer_id)
+    except Exception as e:  # noqa: BLE001 - graph down: the findings below still show
+        st.warning(f"Network diagram unavailable ({type(e).__name__}).")
+        return
+    if dot:
+        st.graphviz_chart(dot, width="stretch")
+        st.markdown(LEGEND, unsafe_allow_html=True)
+
+
+def render_network(network: dict | None, tier: str | None, evidence: dict, customer_id: str) -> None:
     if not network:
         st.info("Fast lane: network analysis runs only in the full lane." if tier == "fast"
                 else "No network findings yet.")
         return
+    render_network_diagram(customer_id)
     label = {"isolated": "Isolated", "benign_links": "Benign links",
              "mule_network_suspected": "Mule network suspected"}.get(network["assessment"], network["assessment"])
     c1, c2, c3 = st.columns(3)

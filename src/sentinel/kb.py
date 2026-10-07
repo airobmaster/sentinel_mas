@@ -154,6 +154,18 @@ class PgPolicyKB:
         return rows[0] if rows else None
 
 
+def describe_backend() -> tuple[str, bool]:
+    """(label, live) for the console: which policy search answers, and whether it has content."""
+    kb = policy_kb()
+    if isinstance(kb, PgPolicyKB):
+        try:
+            n = kb._query("SELECT count(*) AS n FROM kb.policy_chunks", ())[0]["n"]
+            return f"pgvector · {n} sections", n > 0
+        except Exception:  # noqa: BLE001 - table missing: run `sentinel data kb`
+            return "pgvector (not loaded)", False
+    return f"keyword · {len(kb.chunks)} sections", True
+
+
 @lru_cache
 def policy_kb():
     if settings.data_backend == "postgres":

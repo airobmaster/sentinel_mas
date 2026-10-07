@@ -59,6 +59,26 @@ def test_isolated_customer_returns_a_citable_negative(generated):
     assert [e["id"] for e in evidence] == ["graph:CUST-00042", "check:network_links:CUST-00042"]
 
 
+def test_network_diagram_shows_ring_devices_and_transfers(generated):
+    ring = alerts_of(generated, "MULE_RING")[0]["customer_id"]
+    dot = graphdb.network_dot(ring)
+    assert dot.startswith("graph G {") and dot.rstrip().endswith("}")
+    assert f'"{ring}" [shape=ellipse' in dot and "penwidth=3" in dot  # the case customer is highlighted
+    assert dot.count("shape=box") >= 1 and "DEV-R" in dot  # shared ring device
+    assert "#F8B4B4" in dot  # high mule scores coloured red
+    assert graphdb.network_dot("CUST-NOT-THERE") is None
+    isolated = graphdb.network_dot("CUST-00042")
+    assert isolated.count("shape=ellipse") == 1 and "shape=box" not in isolated
+
+
+def test_backend_descriptions(generated):
+    from sentinel import kb
+
+    assert graphdb.describe_backend() == ("in-memory", True)
+    label, live = kb.describe_backend()
+    assert label.startswith("keyword · 22") and live
+
+
 def test_limits_and_entity_scoping(generated):
     with pytest.raises(ToolException, match="hops"):
         get_neighbourhood("UK", "CUST-00042", hops=3)

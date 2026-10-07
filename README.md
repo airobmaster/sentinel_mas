@@ -216,6 +216,12 @@ The test console has two modes with the same three views:
 - **Work queue:** cases by status.
 - **Event stream:** case events.
 
+The case view adds two more tabs:
+- **Typology & policy:** the cited policy sections.
+- **Network:** a diagram of linked customers and shared devices.
+
+The header shows which knowledge sources are live: the graph (Neo4j or in-memory) and the policy knowledge base (pgvector or keyword search).
+
 The modes differ in where the case runs:
 - **Direct (in-process):** runs alerts inside the console, with no Docker needed. The queue and event stream cover this browser session.
 - **Kafka (full stack):**

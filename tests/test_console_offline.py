@@ -15,6 +15,7 @@ def test_direct_mode_renders_with_three_views():
     header = next(m.value for m in at.markdown if m.value.startswith('<div class="sn-header">'))  # branded header
     # Markdown shows lines indented by 4+ spaces as a code block instead of rendering the HTML
     assert not any(line.startswith("    ") for line in header.splitlines())
+    assert "Graph: <b>in-memory</b>" in header and "Policy KB: <b>keyword · 22 sections</b>" in header
     assert any("Not run yet" in i.value for i in at.info)
     assert at.sidebar.button[0].label == "▶ Run investigation"
 

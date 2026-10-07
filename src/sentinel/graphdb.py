@@ -167,6 +167,57 @@ class Neo4jGraph:
         return [{**r, "users": sorted(r["users"])} for r in rows]
 
 
+def _score_colour(score: float | None) -> str:
+    if score is None:
+        return "#E2E8F0"
+    return "#F8B4B4" if score >= 0.6 else "#FCE7B2" if score >= 0.3 else "#E2E8F0"
+
+
+def network_dot(customer_id: str, max_customers: int = 15) -> str | None:
+    """Graphviz DOT for the customer's neighbourhood (2 hops): customers coloured by mule score,
+    shared devices as boxes, transfers as dashed lines. None if the customer is not in the graph."""
+    net = network()
+    own = net.customer_scores([customer_id]).get(customer_id)
+    if own is None:
+        return None
+    links = net.links(customer_id, MAX_HOPS)[:max_customers]
+    shown = {customer_id: own, **{l["customer_id"]: l for l in links}}
+    lines = ['graph G {', 'graph [rankdir=LR, bgcolor="transparent", fontname="Helvetica"];',
+             'node [fontname="Helvetica", fontsize=10, style=filled, color="#94A3B8"];',
+             'edge [color="#64748B", fontsize=8, fontname="Helvetica"];']
+    for cid, s in shown.items():
+        label = f"{cid}\\nmule {s.get('mule_score')}"
+        extra = ', penwidth=3, color="#0B2545"' if cid == customer_id else ""
+        lines.append(f'"{cid}" [shape=ellipse, label="{label}", fillcolor="{_score_colour(s.get("mule_score"))}"{extra}];')
+    devices: dict[tuple[str, str], set] = defaultdict(set)  # (device_id, device_type) -> shown users
+    for cid in shown:
+        for d in net.devices_of(cid):
+            users = [u for u in d["users"] if u in shown]
+            if len(d["users"]) > 1 and users:
+                devices[(d["device_id"], d["device_type"])].update(users)
+    for (device_id, device_type), users in sorted(devices.items()):
+        lines.append(f'"{device_id}" [shape=box, label="{device_type}\\n{device_id}", fillcolor="#DBEAFE"];')
+        lines += [f'"{u}" -- "{device_id}";' for u in sorted(users)]
+    for l in links:
+        previous = l["through"][-1] if l["through"] else customer_id
+        if any(v.startswith("transfer") for v in l["via"]):
+            lines.append(f'"{previous}" -- "{l["customer_id"]}" [style=dashed, label="transfer"];')
+    lines.append("}")
+    return "\n".join(lines)
+
+
+def describe_backend() -> tuple[str, bool]:
+    """(label, live) for the console: which graph backend answers network queries."""
+    net = network()
+    if isinstance(net, Neo4jGraph):
+        try:
+            net.driver.verify_connectivity()
+            return "Neo4j + GDS", True
+        except Exception:  # noqa: BLE001 - shown as down in the console
+            return "Neo4j (down)", False
+    return "in-memory", True
+
+
 @lru_cache
 def network():
     """Neo4j when configured and running against Postgres data; otherwise the in-memory graph."""
