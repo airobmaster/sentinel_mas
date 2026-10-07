@@ -49,6 +49,12 @@ if /i "%~1"=="setup" (
     if errorlevel 1 goto :fail
     "%BIN%\sentinel.exe" data load
     if errorlevel 1 goto :fail
+    echo       Embedding the policy documents into the knowledge base...
+    "%BIN%\sentinel.exe" data kb
+    if errorlevel 1 goto :fail
+    echo       Loading the customer network into Neo4j...
+    "%BIN%\sentinel.exe" data graph
+    if errorlevel 1 echo [!] Neo4j load failed: start Neo4j and check SENTINEL_NEO4J_* in .env, then run "sentinel data graph". Continuing with the in-memory graph.
 ) else (
     echo [4/6] Using the data already in Postgres ^(run "start_sentinel.bat setup" to reload it^).
 )

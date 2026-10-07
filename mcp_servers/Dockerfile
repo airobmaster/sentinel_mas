@@ -8,12 +8,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONPATH=/app
 # Only what the tool servers need (the full requirements.txt is for the agent service and dev).
 RUN pip install --no-cache-dir \
     "fastmcp==2.14.7" "mcp==1.30.0" "langchain-core>=1.0,<2.0" "psycopg[binary,pool]>=3.2" \
-    "rapidfuzz>=3.9" "pydantic-settings>=2.4" "pyjwt>=2.9"
+    "rapidfuzz>=3.9" "pydantic-settings>=2.4" "pyjwt>=2.9" \
+    "neo4j>=5.20" "networkx>=3.3" "boto3>=1.35" "botocore[crt]>=1.35"
 
 COPY pyproject.toml ./
 COPY src ./src
 RUN pip install --no-cache-dir --no-deps .
 COPY mcp_servers ./mcp_servers
+COPY data/policies ./data/policies
+ENV SENTINEL_POLICY_DIR=/app/data/policies
 
 RUN useradd --create-home --uid 10001 mcp
 USER mcp

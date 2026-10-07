@@ -69,13 +69,22 @@ async def run_tool_loop(spec: Specialist, messages: list[BaseMessage]) -> list[B
         return (await spec.build_agent(tools).ainvoke({"messages": messages}, config=config))["messages"]
 
 
-async def run_specialist(spec: Specialist, brief: str, legal_entity: str) -> tuple[BaseModel, list[BaseMessage]]:
-    """Return (structured output, conversation messages)."""
+async def run_specialist(spec: Specialist, brief: str, legal_entity: str,
+                         extra_ids: list[str] | None = None) -> tuple[BaseModel, list[BaseMessage]]:
+    """Return (structured output, conversation messages). `extra_ids`: evidence IDs given in the brief
+    that the output may cite in addition to what the tools return."""
     CASE_CONTEXT.set({"legal_entity": legal_entity})  # read by the OPA middleware in this task only
     messages: list[BaseMessage] = [HumanMessage(brief)]
+    finalise = FINALISE
+    ids = list(extra_ids or [])
     if AGENT_TOOLS.get(spec.name):
         messages = await run_tool_loop(spec, messages)
-    result = await spec.extractor.ainvoke([SystemMessage(spec.prompt), *messages, HumanMessage(FINALISE)])
+        ids += [e["id"] for e in tool_evidence(messages, spec.name)]
+    if ids:
+        # Anchor the structured output to real IDs: in a long conversation models otherwise
+        # "reconstruct" plausible-looking IDs from memory.
+        finalise += f"\nEvidence IDs from the brief and your tool calls (copy them exactly): {', '.join(dict.fromkeys(ids))}"
+    result = await spec.extractor.ainvoke([SystemMessage(spec.prompt), *messages, HumanMessage(finalise)])
     return result, messages
 
 

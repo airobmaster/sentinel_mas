@@ -64,6 +64,17 @@ async def test_opa_decisions(monkeypatch, policy_input, allowed):
     assert ok is allowed, reasons
 
 
+@needs_opa
+def test_running_opa_has_the_current_allow_list():
+    """The file can be right while the running engine is stale; compare what OPA has loaded."""
+    import httpx
+
+    from sentinel.tools.registry import AGENT_TOOLS
+
+    loaded = httpx.get(f"{OPA_URL}/v1/data/agent_tools", timeout=5).json()["result"]
+    assert loaded == AGENT_TOOLS
+
+
 @needs_mcp
 async def test_mcp_tools_over_http_return_evidence(monkeypatch):
     monkeypatch.setattr(settings, "mcp_urls", {**settings.mcp_urls, "txn_history": "http://localhost:8103/mcp/"})

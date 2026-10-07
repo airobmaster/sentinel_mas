@@ -14,6 +14,7 @@ from streamlit.testing.v1 import AppTest
 from sentinel.graph import compile_graph
 from sentinel.persistence import durable_state, reset_case
 from sentinel.workers import HANDLERS, run_worker
+from tests import stubs
 
 pytestmark = [
     pytest.mark.integration,
@@ -24,18 +25,6 @@ APP = Path(__file__).resolve().parents[1] / "devtools" / "streamlit_app.py"
 CASE = "CASE-0001"
 
 
-def stub(agent: str, eid: str):
-    async def node(state):
-        return {"evidence": [{"id": eid, "source": "test", "agent": agent, "summary": "stub evidence"}],
-                "findings": {agent: {"stub": True}}}
-    return node
-
-
-async def narrative(state):
-    return {"narrative": {"summary": "Stubbed narrative.", "claims": [{"text": "c", "evidence_ids": ["txn:T1"]}],
-                          "recommendation": "escalate", "reason_code": "STRUCTURING_CONFIRMED", "open_questions": []}}
-
-
 @pytest.fixture
 def stub_worker():
     stop = threading.Event()
@@ -43,9 +32,7 @@ def stub_worker():
     async def main():
         stop_async = asyncio.Event()
         async with durable_state() as (checkpointer, cases):
-            graph = compile_graph(checkpointer=checkpointer, nodes={
-                "kyc": stub("kyc", "crm:N1"), "txn": stub("txn", "txn:T1"),
-                "screening": stub("screening", "list:X"), "narrative": narrative})
+            graph = compile_graph(checkpointer=checkpointer, nodes=stubs.nodes())
             task = asyncio.create_task(run_worker(graph, cases, HANDLERS["all"], 2, stop_async))
             while not stop.is_set():
                 await asyncio.sleep(0.2)

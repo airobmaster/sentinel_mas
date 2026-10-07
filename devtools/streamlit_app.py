@@ -154,21 +154,34 @@ def decision_form(case_id: str, packet: dict) -> dict | None:
 def render_case(alert: dict, status: str | None, values: dict, packet: dict | None, events: list[dict],
                 on_decision, decision_note: str | None = None) -> None:
     narrative = values.get("narrative") or {}
+    findings = values.get("findings", {})
+    typology = findings.get("typology") or {}
+    critic = findings.get("qa")
     evidence = {e["id"]: e for e in values.get("evidence", [])}
     case_heading(alert["case_id"], alert.get("scenario_name", ""), status)
-    c1, c2, c3, c4, c5 = st.columns(5)
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("Lane", values.get("tier", "-"))
-    c2.metric("Recommendation", narrative.get("recommendation", "-"))
-    c3.metric("Reason code", narrative.get("reason_code", "-"))
-    c4.metric("QA rounds", values.get("qa_rounds", 0))
-    c5.metric("Evidence items", len(evidence))
+    c2.metric("Recommendation", typology.get("recommendation") or narrative.get("recommendation", "-"))
+    c3.metric("Reason code", typology.get("reason_code") or narrative.get("reason_code", "-"))
+    c4.metric("Risk score", typology.get("risk_score", "-"))
+    c5.metric("QA", (f"{'✓' if critic['passed'] else '✗'} critic" if critic else "checks")
+              + f" · {values.get('qa_rounds', 0)} rd")
+    c6.metric("Evidence items", len(evidence))
 
-    review, findings_tab, evidence_tab, trace_tab, raw_tab = st.tabs(
-        ["Review", "Findings", "Evidence", "Trace", "Raw state"])
+    review, typology_tab, network_tab, findings_tab, evidence_tab, trace_tab, raw_tab = st.tabs(
+        ["Review", "Typology & policy", "Network", "Findings", "Evidence", "Trace", "Raw state"])
     with review:
-        if values.get("qa_issues"):
+        serious = [i for i in values.get("qa_issues", []) if i["severity"] in ("blocker", "major")]
+        notes = [i for i in values.get("qa_issues", []) if i["severity"] == "minor"]
+        if serious:
             st.warning("Unresolved QA issues:\n" + "\n".join(f"- [{i['severity']}] {i['description']}"
-                                                             for i in values["qa_issues"]))
+                                                             for i in serious))
+        if critic:
+            checks = " ".join(f"{'✅' if ok else '❌'} {name.replace('_', ' ')}" for name, ok in critic["checks"].items())
+            st.caption(f"QA critic ({critic['model'].split('.')[-1].split(':')[0]}): {checks}")
+        if notes:
+            with st.expander(f"QA notes ({len(notes)} minor)"):
+                st.markdown("\n".join(f"- {i['description']}" for i in notes))
         st.markdown(f"**Summary.** {narrative.get('summary', '')}")
         st.markdown("**Claims**")
         for i, claim in enumerate(narrative.get("claims", []), 1):
@@ -195,11 +208,15 @@ def render_case(alert: dict, status: str | None, values: dict, packet: dict | No
                 on_decision(decision)
         else:
             st.error("The run ended without reaching human review.")
+    with typology_tab:
+        render_typology(typology, evidence)
+    with network_tab:
+        render_network(findings.get("network"), values.get("tier"), evidence)
     with findings_tab:
-        for agent in ("triage", "kyc", "txn", "screening"):
-            if agent in values.get("findings", {}):
-                with st.expander(agent.upper(), expanded=agent != "triage"):
-                    st.json(values["findings"][agent])
+        for agent in ("triage", "kyc", "txn", "screening", "network", "typology", "qa"):
+            if agent in findings:
+                with st.expander(agent.upper(), expanded=agent in ("kyc", "txn", "screening")):
+                    st.json(findings[agent])
     with evidence_tab:
         st.dataframe(pd.DataFrame(values.get("evidence", []), columns=["id", "agent", "source", "summary"]),
                      width="stretch", hide_index=True)
@@ -209,6 +226,47 @@ def render_case(alert: dict, status: str | None, values: dict, packet: dict | No
         st.json(values.get("versions", {}))
     with raw_tab:
         st.json(values)
+
+
+def render_typology(typology: dict, evidence: dict) -> None:
+    if not typology:
+        st.info("No typology assessment yet.")
+        return
+    st.markdown(f"**Recommendation:** `{typology.get('recommendation')}` ({typology.get('reason_code')}) · "
+                f"risk score **{typology.get('risk_score')}**/100")
+    st.markdown(f"**Rationale.** {typology.get('rationale', '')}")
+    matches = typology.get("typologies", [])
+    if matches:
+        st.dataframe(pd.DataFrame([{"typology": m["code"], "confidence": f"{m['confidence']:.0%}",
+                                    "rationale": m["rationale"], "evidence": ", ".join(m["evidence_ids"]),
+                                    "policy": ", ".join(m["policy_refs"])} for m in matches]),
+                     width="stretch", hide_index=True)
+    refs = sorted(set(typology.get("policy_refs", [])) | {r for m in matches for r in m["policy_refs"]})
+    if refs:
+        st.markdown("**Policy sections relied on**")
+        for ref in refs:
+            e = evidence.get(ref)
+            st.markdown(f"- `{ref}` — {e['summary'] if e else '**not in evidence**'}")
+
+
+def render_network(network: dict | None, tier: str | None, evidence: dict) -> None:
+    if not network:
+        st.info("Fast lane: network analysis runs only in the full lane." if tier == "fast"
+                else "No network findings yet.")
+        return
+    label = {"isolated": "Isolated", "benign_links": "Benign links",
+             "mule_network_suspected": "Mule network suspected"}.get(network["assessment"], network["assessment"])
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Assessment", label)
+    c2.metric("Mule score", network.get("mule_score") if network.get("mule_score") is not None else "-")
+    c3.metric("Related customers", len(network.get("related_parties", [])))
+    st.markdown(f"**Summary.** {network.get('summary', '')}")
+    if network.get("related_parties"):
+        st.dataframe(pd.DataFrame([{"customer": p["customer_id"], "relationship": p["relationship"],
+                                    "mule score": p.get("mule_score"), "evidence": ", ".join(p["evidence_ids"])}
+                                   for p in network["related_parties"]]), width="stretch", hide_index=True)
+    for device in network.get("shared_devices", []):
+        st.markdown(f"- {device['description']}  " + " ".join(f"`{eid}`" for eid in device["evidence_ids"]))
 
 
 def render_queue(rows: list[dict], key: str, note: str) -> None:

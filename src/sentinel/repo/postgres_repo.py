@@ -17,7 +17,7 @@ def clean(row: dict) -> dict:
 
 TXN_COLUMNS = (
     "txn_id, account_id, txn_date AS date, direction, amount, currency, channel, branch, "
-    "counterparty, counterparty_country, reference"
+    "counterparty, counterparty_country, counterparty_account, reference"
 )
 
 
@@ -104,3 +104,30 @@ class PostgresRepo:
     def ground_truth(self) -> dict[str, dict]:
         rows = self._all("SELECT case_id, expected FROM cases.alerts WHERE expected IS NOT NULL")
         return {r["case_id"]: r["expected"] for r in rows}
+
+    # --- graph sources (network analysis) -------------------------------------------------------
+    def all_customers(self) -> list[dict]:
+        return self._all(
+            """SELECT c.*, COALESCE(array_agg(a.account_id ORDER BY a.account_id)
+                         FILTER (WHERE a.account_id IS NOT NULL), '{}') AS account_ids
+               FROM core.customers c LEFT JOIN core.accounts a USING (customer_id)
+               GROUP BY c.customer_id ORDER BY c.customer_id"""
+        )
+
+    def device_links(self) -> list[dict]:
+        return self._all("SELECT customer_id, device_id, device_type FROM core.device_links "
+                         "ORDER BY customer_id, device_id")
+
+    def internal_transfers(self) -> list[dict]:
+        return self._all(f"SELECT {TXN_COLUMNS} FROM lake.transactions "
+                         "WHERE counterparty_account IS NOT NULL AND direction = 'debit' ORDER BY txn_id")
+
+    def distinct_senders(self, as_of: str, lookback_days: int) -> dict[str, int]:
+        end = date.fromisoformat(as_of[:10])
+        rows = self._all(
+            "SELECT account_id, count(DISTINCT counterparty) AS n FROM lake.transactions "
+            "WHERE direction = 'credit' AND counterparty IS NOT NULL AND txn_date > %s AND txn_date <= %s "
+            "GROUP BY account_id",
+            (end - timedelta(days=lookback_days), end),
+        )
+        return {r["account_id"]: r["n"] for r in rows}

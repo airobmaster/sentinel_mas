@@ -32,6 +32,13 @@ async def triage(state: CaseState) -> dict:
     triggering_total = sum(t["amount"] for t in data.transactions_by_ids(alert["triggering_txn_ids"]))
     hits = lane_rules(alert, customer, triggering_total)
     tier = "full" if hits else "fast"
+    alert_evidence = {
+        "id": f"alert:{alert['case_id']}", "source": "case_mgmt.get_alert", "agent": "triage",
+        "summary": (f"alert {alert['alert_id']} ({alert['scenario_code']}, score {alert['score']}): "
+                    f"{len(alert['triggering_txn_ids'])} triggering transaction(s) totalling {triggering_total:,.2f}; "
+                    f"lane {tier}" + (f" because {'; '.join(hits)}" if hits else "")),
+    }
+    profile = [{**profile_evidence(customer, "case_mgmt.get_customer"), "agent": "triage"}] if customer else []
     return {
         "tier": tier,
         "findings": {
@@ -42,5 +49,5 @@ async def triage(state: CaseState) -> dict:
                 "triggering_total": triggering_total,
             }
         },
-        "evidence": [{**profile_evidence(customer, "case_mgmt.get_customer"), "agent": "triage"}] if customer else [],
+        "evidence": [alert_evidence, *profile],
     }

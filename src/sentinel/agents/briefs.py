@@ -61,16 +61,45 @@ def brief_for(agent: str, state: CaseState) -> str:
             f"- nationality: {customer.get('nationality', 'unknown')}\n"
             f"- occupation: {customer.get('occupation', 'unknown')}"
         )
-    elif agent == "narrative":
-        findings = {k: v for k, v in state.get("findings", {}).items() if k in ("triage", "kyc", "txn", "screening")}
+    elif agent == "network":
+        brief = (
+            f"{_alert_line(state)} Lane: full.\nCustomer: {alert['customer_id']}\n"
+            f"Accounts on the alert: {', '.join(alert['account_ids'])}"
+        )
+    elif agent == "typology":
+        findings = _findings(state, ("triage", "kyc", "txn", "screening", "network"))
         brief = (
             f"{_alert_line(state)} Lane: {state.get('tier', 'fast')}.\n\n"
             f"Specialist findings:\n{json.dumps(findings, indent=2)}\n\n"
+            f"Case evidence (cite only these IDs, plus policy IDs from your tools):\n"
+            f"{_evidence_lines(state.get('evidence', []))}\n\n"
+            f"Allowed reason codes:\n{json.dumps(REASON_CODES, indent=2)}"
+        )
+    elif agent == "narrative":
+        findings = _findings(state, ("triage", "kyc", "txn", "screening", "network"))
+        brief = (
+            f"{_alert_line(state)} Lane: {state.get('tier', 'fast')}.\n\n"
+            f"Specialist findings:\n{json.dumps(findings, indent=2)}\n\n"
+            f"Typology & Policy assessment (adopt its recommendation and reason code):\n"
+            f"{json.dumps(state.get('findings', {}).get('typology', {}), indent=2)}\n\n"
             f"Evidence catalogue (cite only these IDs):\n{_evidence_lines(state.get('evidence', []))}\n\n"
             f"Allowed reason codes:\n{json.dumps(REASON_CODES, indent=2)}"
         )
+    elif agent == "qa":
+        findings = _findings(state, ("triage", "kyc", "txn", "screening", "network", "typology"))
+        brief = (
+            f"{_alert_line(state)} Lane: {state.get('tier', 'fast')}.\n\n"
+            f"Findings:\n{json.dumps(findings, indent=2)}\n\n"
+            f"Evidence catalogue:\n{_evidence_lines(state.get('evidence', []))}\n\n"
+            f"Narrative under review:\n{json.dumps(state.get('narrative', {}), indent=2)}"
+        )
+        return brief  # the critic reviews the current draft; it has no tools and no rework history
     else:
         raise ValueError(f"No brief for agent {agent!r}")
     if agent != "narrative":
         brief += f"\nlegal_entity: {state['legal_entity']} (pass it to every tool call)"
     return brief + _qa_section(agent, state)
+
+
+def _findings(state: CaseState, agents: tuple[str, ...]) -> dict:
+    return {k: v for k, v in state.get("findings", {}).items() if k in agents}

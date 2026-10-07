@@ -3,10 +3,10 @@
 | Item | Value |
 |---|---|
 | Document | 05 — Project Task Plan |
-| Version | 0.5 (vertical slices; DeepSeek on Bedrock) |
+| Version | 0.9 (vertical slices; full agent squad; DeepSeek + Claude Haiku critic on Bedrock) |
 | Owner | Rakesh Velayudhan, AI pair-programming |
 | Window | 7 days: Day 1 → Day 7 (demo at the end of Day 7) |
-| Current day | Day 2: Slices 1–4 done (see [Build approach](#build-approach-vertical-slices)) |
+| Current day | Day 3: Slices 1–5 done (see [Build approach](#build-approach-vertical-slices)) |
 | Related | [01 HLD](01_High_Level_Design.md) · [02 TDD](02_Technical_Design.md) · [03 Functional Spec](03_Functional_Specification.md) · [04 Roadmap](04_Project_Roadmap.md) |
 
 ---
@@ -33,8 +33,9 @@ Work proceeds as thin end-to-end slices (alert in → agents → human decision)
 | 2 | **KYC + Screening agents**; parallel fan-out and join; specialist rework rejoins at narrative; 3rd fixture case (true sanctions match); two-phase agents (tool loop → structured output); **Streamlit test console** (`devtools/streamlit_app.py`, dev only) | **Done**: 32 offline tests + 4 live tests green (3 cases, 3/3 runs, plus a UI smoke test) |
 | 3 | **Seeded generator** (305 customers, ~18k txns, 85 alerts with ground truth across 10 typologies) + **Postgres** (schema, loader, JSON/Postgres repositories); **4 MCP servers** in Docker (dev JWT, entity scoping, evidence as structured content); **OPA** deny-by-default middleware on every tool call; `check:` evidence for negative findings; **batch eval** (`sentinel eval`) | **Done**: 56 offline + 9 integration + 8 Rego tests; live suite green on the full stack; 20-case eval: escalation recall 1.0, false escalations 0.0, agreement 1.0, citation validity 1.0 |
 | 4 | **Kafka** (KRaft + UI) with validated alert/decision/case-event schemas and a DLQ; **alert and decision workers** (idempotent start, stale-decision guard, retries → DLQ, case status in `cases.alerts`); **`AsyncPostgresSaver`**; one MCP session per agent run; `sentinel kafka …` / `sentinel worker` CLI | **Done**: 70 offline + 10 integration tests (incl. Kafka round trip); **Gate G3 passed**: 10 alerts via Kafka → review, all correct, 100% valid citations; decisions applied; duplicate alert and stale decision ignored |
-| 5 | Network agent (Neo4j), typology & policy agent (pgvector policy KB), LLM QA critic | Next |
-| 6+ | Guardrails, extended HITL (UC-03/04/08), Airflow, API, workbench, evals, observability, AWS | |
+| 5 | **Full squad**: Network agent (Neo4j + GDS, device-sharing mule rings), Typology & policy agent (versioned UK/ES manuals, Cohere Multilingual v3, hybrid pgvector search), independent LLM QA critic (Claude Haiku 4.5); lane routing; `graph_query` + `policy_kb` MCP servers; console Typology & Network tabs | **Done**: 87 offline + 17 integration tests; 24-case full-stack eval: escalation recall 1.0, false escalations 0.0, agreement 0.958 (acceptable 1.0), citation validity 1.0, 0 errors |
+| 6 | Guardrails (PII, injection, budgets), extended HITL (UC-03/04/08) | Next |
+| 7+ | Airflow, API, workbench, evals tooling, observability, AWS | |
 
 ---
 
@@ -42,14 +43,14 @@ Work proceeds as thin end-to-end slices (alert in → agents → human decision)
 
 | Day | Theme | Tasks | Done | % | Est. hours | Gate |
 |---|---|---|---|---|---|---|
-| Day 1 | Foundations, Kafka, Airflow, data | 17 | 3 | 18% | ~10.5 | G1 — |
-| Day 2 | MCP tools, OPA, Kafka + Airflow DAGs | 13 | 6 | 46% | ~10.0 | G2 — |
-| Day 3 | Core graph, HITL, Kafka workers | 15 | 8 | 53% | ~10.75 | G3 ✔ |
-| Day 4 | Full squad, guardrails, extended HITL | 14 | 0 | 0% | ~9.75 | G4 — |
+| Day 1 | Foundations, Kafka, Airflow, data | 17 | 6 | 35% | ~10.5 | G1 — |
+| Day 2 | MCP tools, OPA, Kafka + Airflow DAGs | 13 | 7 | 54% | ~10.0 | G2 — |
+| Day 3 | Core graph, HITL, Kafka workers | 15 | 12 | 80% | ~10.75 | G3 ✔ |
+| Day 4 | Full squad, guardrails, extended HITL | 14 | 5 | 36% | ~9.75 | G4 — |
 | Day 5 | API & full workbench | 18 | 0 | 0% | ~12.0 | G5 — |
 | Day 6 | Eval, observability, CI, AWS foundation | 14 | 0 | 0% | ~10.25 | G6 — |
 | Day 7 | AWS deploy, hardening, demo | 12 | 0 | 0% | ~9.75 | G7 — |
-| **Total** | | **103** | **17** | **17%** | **~73** | |
+| **Total** | | **103** | **30** | **29%** | **~73** | |
 
 ---
 
@@ -61,19 +62,19 @@ Work proceeds as thin end-to-end slices (alert in → agents → human decision)
 - [x] **D1-03** (M) Compose: Kafka (KRaft) + Kafka UI, Postgres+pgvector, OPA [DEMO 1] · ~0.75h ✔ Day 2 (Slices 3–4)
 - [ ] **D1-04** (M) Compose: Airflow 3 `standalone` (LocalExecutor, metadata DB in Postgres, `ingestion/airflow/dags` mounted) [DEMO 3] · ~0.75h
 - [ ] **D1-05** (M) Compose: OTel Collector, Tempo, Prometheus, Grafana · ~0.5h
-- [ ] **D1-06** (M) Local Neo4j: connectivity from host and containers (`host.docker.internal`), GDS plugin check, read-only dev user · ~0.5h
+- [x] **D1-06** (M) Local Neo4j: connectivity from host and containers (`host.docker.internal`), GDS plugin check, read-only dev user · ~0.5h ✔ Day 2 (Slice 5): Neo4j Desktop 2026.09 + GDS 2026.09; host (`neo4j://`) and containers (`bolt://host.docker.internal`); dedicated read-only user still pending
 - [ ] **D1-07** (M) Neo4j MCP server in the AI pair-programming tool (read-only creds, **dev only**, never an agent tool) · ~0.25h
 - [ ] **D1-08** `WIP` (M) Makefile: `up`, `down`, `seed`, `test`, `eval`, `demo`, `aws-plan`, `aws-up`, `aws-down` · ~0.25h — `make` is not on the Windows dev machine, so `seed`/`eval` are `sentinel data generate|load` and `sentinel eval` CLI commands; a thin Makefile wrapper for POSIX/CI is pending
 - [x] **D1-09** (M) Verify Bedrock for Haiku 4.5 / Sonnet 5.5 / Opus 5.5; pin IDs; Anthropic fallback (Q1) · ~0.75h ✔ Day 1 — Sonnet/Opus 5.5 not available on the account; DeepSeek V3.2 pinned (see Q1)
 - [ ] **D1-10** (M) LangSmith dev project + env vars (BR-14) · ~0.25h
 
 **Synthetic data** (TDD §3.5)
-- [ ] **D1-11** `WIP` (M) Generator: customers, accounts, expected activity, devices, benign transactions · ~1h — seeded generator (UK + ES, retail + business, ~300 customers, ~18k txns) done; devices wait for the Network slice
-- [ ] **D1-12** `WIP` (M) Generator: planted STRUCT, PASSTHRU, HRJ, PROFILE, MULE_RING · ~1h — STRUCT, PASSTHRU, HRJ, MULE fan-in/fan-out, PEP + benign look-alikes done; device-sharing rings and an explicit PROFILE typology pending
+- [x] **D1-11** (M) Generator: customers, accounts, expected activity, devices, benign transactions · ~1h ✔ Day 2 (Slice 5): devices for every customer, benign shared household devices
+- [ ] **D1-12** `WIP` (M) Generator: planted STRUCT, PASSTHRU, HRJ, PROFILE, MULE_RING · ~1h — all done incl. device-sharing MULE_RING (6 rings, planted last so earlier data is unchanged); an explicit PROFILE typology is still pending
 - [ ] **D1-13** `WIP` (M) Generator: sanctions/PEP (true + near-miss), adverse media and CRM notes (incl. injection payloads), registry · ~0.75h — true/near-miss lists, relevant + same-name adverse media, CRM notes done; injection payloads (Day 4) and registry pending
 - [ ] **D1-14** `WIP` (M) Generator: alerts with ground truth; golden set of 100 (20 held out) · ~0.75h — 85 generated + 3 fixture alerts with ground truth (expected + acceptable dispositions); held-out split pending
 - [x] **D1-15** (M) Postgres migration (TDD §3.3) + loader · ~0.75h ✔ Day 1 (Slice 3): `datagen/schema.sql` + `sentinel data load`; Postgres/JSON parity test
-- [ ] **D1-16** (M) Neo4j loader + `graph_scores.py` (GDS, with `networkx` fallback for AWS) · ~0.75h
+- [x] **D1-16** (M) Neo4j loader + `graph_scores.py` (GDS, with `networkx` fallback for AWS) · ~0.75h ✔ Day 2 (Slice 5): `sentinel data graph` (`graphdb.py`); GDS WCC + Louvain, rule-based mule score; parity test vs networkx
 - [ ] **D1-17** (M) **Gate G1:** clean-clone `make up && make seed`; Kafka/Airflow/Grafana/Neo4j reachable; patterns visible; models respond · ~0.25h
 
 ---
@@ -85,7 +86,7 @@ Work proceeds as thin end-to-end slices (alert in → agents → human decision)
 - [ ] **D2-03** `WIP` (M) `kyc_profile`: profile, expected activity, accounts, CRM notes · ~0.5h — profile (incl. expected activity and accounts) + CRM notes done; separate tools not needed yet
 - [ ] **D2-04** `WIP` (M) `txn_history`: transactions, velocity, structuring, pass-through, peer compare (FR-030–034) · ~1.5h — all but `peer_compare` done
 - [ ] **D2-05** `WIP` (M) `screening`: sanctions/PEP fuzzy (rapidfuzz), adverse media, registry · ~1h — sanctions/PEP + adverse media done; registry pending
-- [ ] **D2-06** (M) `graph_query`: template Cypher only, ≤ 2 hops, ≤ 50 nodes (BR-03) · ~0.75h
+- [x] **D2-06** (M) `graph_query`: template Cypher only, ≤ 2 hops, ≤ 50 nodes (BR-03) · ~0.75h ✔ Day 2 (Slice 5)
 - [x] **D2-07** (M) MCP servers in Compose · ~0.5h ✔ Day 1 (Slice 3): one image, four containers (ports 8101–8104)
 - [x] **D2-08** (M) Tool unit tests (positive, negative, limits) · ~1h ✔ Day 1 (Slice 3): tool, MCP in-memory and MCP-over-HTTP integration tests
 - [x] **D2-09** (M) OPA Rego + `data.agent_tools` + `opa test` (FR-120/121) · ~0.75h ✔ Day 1 (Slice 3): 8/8 Rego tests; Python allow-list kept equal to `data.json` by a test
@@ -99,16 +100,16 @@ Work proceeds as thin end-to-end slices (alert in → agents → human decision)
 ## Day 3 — Core agent graph, HITL & Kafka workers
 
 - [x] **D3-01** (M) `state.py` with reducers + tests (TDD §5.1) · ~0.5h ✔ Day 1 (Slice 1)
-- [ ] **D3-02** `WIP` (M) Pydantic output schemas for all 8 agents · ~0.75h — kyc, txn, screening, narrative done
+- [x] **D3-02** (M) Pydantic output schemas for all 8 agents · ~0.75h ✔ Day 2 (Slice 5)
 - [ ] **D3-03** `WIP` (M) Agent factory + prompt loader + prompts v1 · ~1h — two-phase factory (tool loop → structured output), loader, prompts for 4 agents done; middleware hooks pending
 - [ ] **D3-04** `WIP` (M) Triage: lane rules (BR-02) + LLM upgrade-only · ~0.75h — rules + tests done; LLM upgrade pending
 - [x] **D3-05** (M) KYC context agent · ~0.5h ✔ Day 1 (Slice 2): in-process tools until D2-03
 - [x] **D3-06** (M) Transaction analytics agent · ~0.5h ✔ Day 1 (Slice 1) — in-process detector tools until D2-04 moves them to MCP
 - [x] **D3-07** (M) Screening agent · ~0.5h ✔ Day 1 (Slice 2): rapidfuzz sanctions/PEP + adverse media, in-process until D2-05
-- [ ] **D3-08** (M) Typology stub (rules-based recommendation) · ~0.25h
+- [x] **D3-08** (M) Typology stub (rules-based recommendation) · ~0.25h ✔ Day 2: superseded by the full Typology & policy agent (D4-06)
 - [ ] **D3-09** `WIP` (M) Narrative agent: claims with evidence IDs; model by lane · ~0.75h — cited claims done; model-by-lane pending
-- [ ] **D3-10** `WIP` (M) Citation guard + QA critic (model ≠ narrative) + `rework` node and routing · ~1.25h — citation guard, rework node, routing done; LLM critic pending
-- [ ] **D3-11** `WIP` (M) `graph.py` wiring + tests: fan-out/join, fast vs full, two QA failures → human · ~1h — fan-out/join, specialist + narrative rework, two-failure tests done; fast vs full routing waits for the network agent
+- [x] **D3-10** (M) Citation guard + QA critic (model ≠ narrative) + `rework` node and routing · ~1.25h ✔ Day 2 (Slice 5): Claude Haiku 4.5 critic after the code checks; rework only for blocker/major
+- [x] **D3-11** (M) `graph.py` wiring + tests: fan-out/join, fast vs full, two QA failures → human · ~1h ✔ Day 2 (Slice 5)
 - [x] **D3-12** (M) `AsyncPostgresSaver` + `human_review` interrupt + OPA `@wrap_tool_call` middleware · ~0.75h ✔ Day 2 (Slices 3–4): checkpoint tables in schema `sentinel`
 - [x] **D3-13** (M) Alert worker: idempotent start (FR-002), DLQ, events to `aml.case-events.v1` (TDD §13) · ~1h ✔ Day 2 (Slice 4): crash-recovery scan of `in_progress` cases still pending
 - [x] **D3-14** (M) Decision worker: consume `aml.decisions.v1`, check `snapshot.next`, resume (TDD §15) · ~0.75h ✔ Day 2 (Slice 4)
@@ -118,19 +119,19 @@ Work proceeds as thin end-to-end slices (alert in → agents → human decision)
 
 ## Day 4 — Full squad, guardrails & extended HITL
 
-- [ ] **D4-01** (M) Synthetic policy manuals (UK, ES) + typology guide, versioned · ~0.75h
-- [ ] **D4-02** (S) Docling parse + HybridChunker + embeddings → `kb.policy_chunks` (Q2) · ~1h
-- [ ] **D4-03** (M) `policy_kb` server: hybrid search (vector + full-text, RRF), entity filter · ~0.75h
+- [x] **D4-01** (M) Synthetic policy manuals (UK, ES) + typology guide, versioned · ~0.75h ✔ Day 2 (Slice 5): `data/policies/` (AML-UK v3.2 English, AML-ES v2.1 Spanish, TYP-GUIDE v1.4)
+- [x] **D4-02** (S) Docling parse + HybridChunker + embeddings → `kb.policy_chunks` (Q2) · ~1h ✔ Day 2 (Slice 5): section chunker for Markdown manuals (Docling only needed for PDF/Word) + Cohere Multilingual v3
+- [x] **D4-03** (M) `policy_kb` server: hybrid search (vector + full-text, RRF), entity filter · ~0.75h ✔ Day 2 (Slice 5): falls back to full text if embedding fails; cross-language retrieval verified
 - [ ] **D4-04** (M) Airflow DAG `policy_reembed` [DEMO 3] · ~0.25h
-- [ ] **D4-05** (M) Network agent, full lane only (FR-050–053) · ~0.75h
-- [ ] **D4-06** (M) Typology & policy agent replacing the stub (FR-060–063) · ~0.75h
+- [x] **D4-05** (M) Network agent, full lane only (FR-050–053) · ~0.75h ✔ Day 2 (Slice 5)
+- [x] **D4-06** (M) Typology & policy agent replacing the stub (FR-060–063) · ~0.75h ✔ Day 2 (Slice 5): policy sections pre-retrieved in code so every recommendation cites real policy IDs
 - [ ] **D4-07** (M) Presidio PII middleware; custom recognisers are (S) (FR-122) · ~0.75h
 - [ ] **D4-08** (M) Injection rail on tool outputs (FR-123, lightweight) · ~0.75h
 - [ ] **D4-09** (M) Budgets: tool-call limit, token budget, recursion limit (FR-125) · ~0.5h
 - [ ] **D4-10** (M) UC-08: injected "close this alert" → OPA deny, logged and counted [DEMO 7] · ~0.5h
 - [ ] **D4-11** (M) UC-03: `HumanInTheLoopMiddleware` on `draft_customer_info_request` + tipping-off check (BR-11) [DEMO 4] · ~1h
 - [ ] **D4-12** (M) UC-04: `request_info` → customer reply → follow-up run on `{case_id}:r1` (FR-096, TDD §7.2) [DEMO 5] · ~1h
-- [ ] **D4-13** (M) Baseline golden run: 100 cases via `alert_replay` → Kafka; record recall/agreement/completeness · ~0.75h
+- [ ] **D4-13** `WIP` (M) Baseline golden run: 100 cases via `alert_replay` → Kafka; record recall/agreement/completeness · ~0.75h — 24-case stratified baseline on the full stack recorded (Day 3); 100-case run via Airflow replay pending
 - [ ] **D4-14** (M) **Gate G4:** 8 agents; BR-05 checklist passes; UC-03/04/08 work via CLI/API; baseline logged · ~0.25h
 
 ---
@@ -224,8 +225,8 @@ Work proceeds as thin end-to-end slices (alert in → agents → human decision)
 | # | Question | Needed by | Status | Answer |
 |---|---|---|---|---|
 | Q1 | Bedrock inference profile IDs for Opus 5.5 / Sonnet 5.5 / Haiku 4.5 (or the Anthropic API?) | D1-09 | **Answered** | Sonnet/Opus 5.5 return "not available for this account". Use `deepseek.v3.2` (eu-west-2, on-demand; text + tool calls verified) for all agents; `deepseek.v3-v1:0` and `eu.anthropic.claude-haiku-4-5-20251001-v1:0` also work (Haiku is the candidate QA-critic model, ≠ narrative). Set via `SENTINEL_MODEL_*` |
-| Q2 | Embedding model: Cohere on Bedrock or Titan? | D4-02 | Open | |
-| Q3 | Neo4j locally | D1-06 | **Answered** | Local install available; GDS plugin to be checked |
+| Q2 | Embedding model: Cohere on Bedrock or Titan? | D4-02 | **Answered** | Cohere Multilingual v3 (1024 dims; English + Spanish policies); Titan Text v2 also available |
+| Q3 | Neo4j locally | D1-06 | **Answered** | Neo4j Desktop 2026.09 Enterprise with GDS 2026.09 |
 | Q4 | GitHub remote for Actions | D1-01 | **Answered** | Yes |
 | Q5 | Kafka / Airflow / AWS / extended HITL / extra screens in scope? | — | **Answered** | Yes, all needed for the demo |
 | Q6 | AWS target | D6-12 | **Answered** | Managed-lite (TDD §19.3) |
@@ -246,6 +247,10 @@ Work proceeds as thin end-to-end slices (alert in → agents → human decision)
 | Day 1 | Slice 3 | Benign cash businesses escalated: generator planted the large deposits on top of normal takings, so cash ran 2–3× the declared profile (ground truth was wrong, not the model) | Planted deposits now replace ordinary takings, on businesses large enough to absorb them | Day 1 |
 | Day 1 | Slice 3 | OPA `ConnectTimeout` under load: each new connection through Docker Desktop on Windows costs ~0.55 s and queues (up to 22 s) | One pooled `httpx` client per event loop + one retry (still fails closed). Same per-call connection cost slows MCP (new session per tool call): one session per server per agent run added in Slice 4 | Day 1 (OPA), Day 2 (MCP) |
 | Day 2 | Slice 4 | psycopg's async driver (Postgres checkpointer) cannot run on Windows' default Proactor event loop | CLI and tests use the selector loop on Windows; Linux containers on AWS are unaffected | Day 2 |
+| Day 2 | Slice 5 | Typology agent cited invented policy IDs (citation validity 0 on a 5-case run): it often skipped its search tool and reconstructed plausible references | Policy sections relevant to the findings are retrieved in code and put in the brief; the final structured-output step is given the exact IDs to copy (all agents). Validity 1.0 | Day 2 |
+| Day 2 | Slice 5 | GDS 2026.09 rejects `randomSeed` for Louvain; Neo4j `devices_of` dropped devices nobody else uses (one pattern cannot reuse a relationship) | Removed the option; users matched in a second MATCH; Neo4j/networkx parity test | Day 2 |
+| Day 3 | Slice 5 | OPA kept the old allow-list after `data.json` changed (only read at start), so the network agent's tools were denied in one eval case | OPA runs with `--watch`; integration test compares the running engine's allow-list with the code | Day 3 |
+| Day 3 | Slice 5 | `aws login` session expired during a long eval while the laptop slept: 14 of 24 cases errored | Re-login and rerun; long runs need an awake machine (on AWS the task role refreshes credentials) | Day 3 |
 
 ---
 
@@ -269,7 +274,7 @@ Work proceeds as thin end-to-end slices (alert in → agents → human decision)
 |---|---|---|---|
 | Day 1 | Slice 1 end to end (D1-09, D3-01, D3-06; D3-02/03/04/09/10/11/12 started) | Remaining Day 1 platform tasks | Live: structuring case → escalate with 100% valid citations; benign case → not escalated after prompt v1.1 calibration. Slice 2: KYC + Screening in parallel (D3-05, D3-07); sanctions true match → escalate SANCTIONS_TRUE_MATCH, near-miss names discounted; Streamlit test console added. Slice 3: generator, Postgres, MCP servers, OPA (D1-15, D2-01, D2-07–D2-10); 20-case eval on the full stack all correct with valid citations |
 | Day 2 | Slice 4: Kafka + UI, workers, Postgres checkpointer, persistent MCP sessions (D1-03, D2-11, D3-12–D3-15); Gate G3 passed | Airflow, Neo4j, observability, LangSmith; pre-commit/branch protection | One case ~49 s alone on the full stack (MCP overhead gone); ~75–125 s each with 5 in parallel, limited by Bedrock throughput |
-| Day 3 | | | |
+| Day 3 | Slice 5: full squad (D1-06, D1-11, D1-16, D2-06, D3-02, D3-08, D3-10, D3-11, D4-01–D4-03, D4-05, D4-06); 24-case baseline recorded | Guardrails, UC-03/04/08, Airflow | Mean ~134 s per case with 4 in parallel (two more agents + critic) |
 | Day 4 | | | |
 | Day 5 | | | |
 | Day 6 | | | |
@@ -287,5 +292,6 @@ Work proceeds as thin end-to-end slices (alert in → agents → human decision)
 | v0.4 · planning | Removed calendar dates; plan expressed as Day 1–Day 7 only | Plan must be generic | No scope change |
 | v0.5 · Day 1 | Build in vertical slices (Slice 1 = 2 agents end to end) instead of layer by layer; models switched from Claude Sonnet/Opus 5.5 to DeepSeek V3.2 on Bedrock | Owner's choice to start small and scale; Claude 5.5 models unavailable on the account | No scope change; task order changes. TDD §6.2 model column and HLD to be updated to as-built (D7-11) |
 | v0.6 · Day 1 | Added a Streamlit test console (`devtools/`) as a developer tool alongside the React workbench | Owner wants a simple way to exercise the flow before the API and workbench exist | Dev only, not deployed; React workbench (Day 5) unchanged. Once the API exists the console can call it instead of importing the graph |
-| v0.8 · Day 2 | Slice 4 as-built: workers run as host processes (`sentinel worker`) rather than containers until the AWS slice; one DLQ topic receives failures from both alert and decision consumers (header `source_topic`); case status kept in `cases.alerts.status` | Workers need the developer's Bedrock credentials locally; on AWS the task role provides them | Containerise workers with D6/D7 AWS tasks |
 | v0.7 · Day 1 | Slice 3 as-built deviations: one MCP image serving four servers (`python -m mcp_servers <name>`) instead of a package per server; `kyc` agent also gets `case_mgmt.get_case_history`; `make` replaced by `sentinel data|eval` CLI commands on Windows; new evidence type `check:<kind>:<subject>` for negative findings; dev tokens are HS256 shared-secret JWTs | Simpler build; Windows dev machine; citations for "nothing found" statements | TDD §3.3/§8 and Functional Spec evidence-ID list to be updated as-built (D7-11). Eval sample (20 of 88) was also used for diagnosis, so a held-out run is still needed (D1-14) |
+| v0.8 · Day 2 | Slice 4 as-built: workers run as host processes (`sentinel worker`) rather than containers until the AWS slice; one DLQ topic receives failures from both alert and decision consumers (header `source_topic`); case status kept in `cases.alerts.status` | Workers need the developer's Bedrock credentials locally; on AWS the task role provides them | Containerise workers with D6/D7 AWS tasks |
+| v0.9 · Day 3 | Slice 5 as-built: Neo4j runs in Neo4j Desktop on the host (containers reach it via `host.docker.internal`); policy manuals are Markdown chunked by section (Docling kept for PDF/Word); the typology node pre-retrieves policy sections in code; the QA critic runs only after the code checks pass and minor issues never trigger rework; triage adds an `alert:<case>` evidence item; data/graph/kb loading via `sentinel data load|kb|graph` | Reliability of citations; cost (no critic call on drafts that already fail code checks) | TDD §4, §6.2–6.3 and the Functional Spec evidence-ID list to be updated as-built (D7-11) |

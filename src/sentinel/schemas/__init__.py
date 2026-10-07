@@ -77,6 +77,54 @@ class TxnFindings(BaseModel):
     summary: str = Field(description="2-3 sentences on what the transactions show")
 
 
+class RelatedParty(BaseModel):
+    customer_id: str
+    relationship: str = Field(description="How they are linked, e.g. 'shares device DEV-R001', 'received transfer'")
+    mule_score: float | None = None
+    evidence_ids: list[str]
+
+
+class NetworkFindings(BaseModel):
+    assessment: Literal["isolated", "benign_links", "mule_network_suspected"] = Field(
+        description="isolated: no links; benign_links: links consistent with family/household or ordinary use; "
+                    "mule_network_suspected: shared devices or forwarding consistent with a mule ring")
+    mule_score: float | None = Field(None, description="The customer's own mule score from the graph tools")
+    community_id: str | None = None
+    related_parties: list[RelatedParty]
+    shared_devices: list[Observation]
+    summary: str
+
+
+class TypologyMatch(BaseModel):
+    code: Literal["STRUCT", "PASSTHRU", "MULE_NETWORK", "HRJ", "SANCTIONS", "PEP", "BENIGN"]
+    confidence: float = Field(ge=0, le=1)
+    rationale: str
+    evidence_ids: list[str] = Field(description="Case evidence supporting the match (txn:, cust:, list:, graph: ...)")
+    policy_refs: list[str] = Field(description="Policy evidence IDs, e.g. policy:AML-UK@3.2#4.3")
+
+
+class TypologyAssessment(BaseModel):
+    typologies: list[TypologyMatch] = Field(description="Typologies the findings match, strongest first")
+    risk_score: int = Field(ge=0, le=100)
+    recommendation: Literal["close", "escalate", "request_info"]
+    reason_code: str = Field(description="A reason code allowed for the recommendation")
+    rationale: str = Field(description="Why this recommendation follows from the findings and the cited policy")
+    policy_refs: list[str] = Field(description="Every policy evidence ID the recommendation relies on")
+
+
+class QAFinding(BaseModel):
+    target_agent: Literal["kyc", "txn", "screening", "network", "typology", "narrative"]
+    severity: Literal["blocker", "major", "minor"]
+    description: str
+
+
+class QAReport(BaseModel):
+    passed: bool
+    issues: list[QAFinding] = Field(description="Only problems that matter for the investigator's decision")
+    checks: dict[str, bool] = Field(description="e.g. claims_supported, recommendation_consistent, "
+                                                "red_flags_covered, no_tipping_off, neutral_language")
+
+
 class Claim(BaseModel):
     text: str = Field(description="One factual statement")
     evidence_ids: list[str] = Field(description="At least one ID from the evidence catalogue")

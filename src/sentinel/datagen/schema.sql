@@ -56,9 +56,17 @@ CREATE TABLE lake.transactions (
     branch               text,
     counterparty         text,
     counterparty_country text,
+    counterparty_account text,                          -- set for transfers between the bank's own accounts
     reference            text
 );
 CREATE INDEX transactions_account_date ON lake.transactions (account_id, txn_date);
+
+CREATE TABLE core.device_links (
+    customer_id text NOT NULL REFERENCES core.customers,
+    device_id   text NOT NULL,
+    device_type text NOT NULL,
+    PRIMARY KEY (customer_id, device_id)
+);
 
 CREATE TABLE screening.sanctions_list (
     entry_id    text PRIMARY KEY,

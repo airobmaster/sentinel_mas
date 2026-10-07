@@ -14,6 +14,7 @@ from sentinel.events import ALERTS_TOPIC, CASE_EVENTS_TOPIC, DECISIONS_TOPIC, Al
 from sentinel.graph import compile_graph, run_config
 from sentinel.persistence import durable_state
 from sentinel.workers import HANDLERS, run_worker
+from tests import stubs
 
 pytestmark = [
     pytest.mark.integration,
@@ -22,20 +23,7 @@ pytestmark = [
 ]
 
 
-def stub(agent: str, eid: str):
-    async def node(state):
-        return {"evidence": [{"id": eid, "source": "test", "agent": agent, "summary": "s"}],
-                "findings": {agent: {"stub": True}}}
-    return node
-
-
-async def narrative(state):
-    return {"narrative": {"summary": "s", "claims": [{"text": "c", "evidence_ids": ["txn:T1"]}],
-                          "recommendation": "escalate", "reason_code": "STRUCTURING_CONFIRMED", "open_questions": []}}
-
-
-STUBS = {"kyc": stub("kyc", "crm:N1"), "txn": stub("txn", "txn:T1"), "screening": stub("screening", "list:X"),
-         "narrative": narrative}
+STUBS = stubs.nodes()
 
 
 async def wait_for(consumer, case_id: str, event_type: str, timeout: float = 60) -> dict:

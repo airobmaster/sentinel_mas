@@ -4,6 +4,8 @@
     sentinel run --case CASE-G0001 --accept                      # alert from the data backend
     sentinel data generate                                       # synthetic dataset -> data/generated/
     sentinel data load                                           # fixtures + dataset -> Postgres
+    sentinel data kb                                             # policy documents -> pgvector
+    sentinel data graph                                          # customer network -> Neo4j (+GDS scores)
     sentinel eval --n 20                                         # score recommendations vs ground truth
 """
 
@@ -31,6 +33,13 @@ def specialist_line(agent: str, f: dict) -> str:
     if agent == "txn":
         flags = f.get("red_flags", [])
         return f"txn: {len(flags)} red flag(s) {[r['code'] for r in flags]}"
+    if agent == "network":
+        return (f"network: {f.get('assessment', '?')}, mule score {f.get('mule_score')}, "
+                f"{len(f.get('related_parties', []))} related part(ies)")
+    if agent == "typology":
+        codes = [t["code"] for t in f.get("typologies", [])]
+        return (f"typology: {codes or 'none'}, risk {f.get('risk_score', '?')}, recommends "
+                f"{f.get('recommendation', '?')} ({f.get('reason_code', '?')}), {len(f.get('policy_refs', []))} policy ref(s)")
     hits = f.get("hits", [])
     true_hits = [h["entry_id"] for h in hits if h["is_true_match"]]
     media = [m["article_id"] for m in f.get("adverse_media", []) if m["is_about_customer"]]
@@ -45,7 +54,7 @@ def describe_update(node: str, out: dict | None) -> list[str]:
     if node == "triage":
         t = findings["triage"]
         return [f"[triage]    lane={t['tier']}  rule hits={t['rule_hits'] or 'none'}"]
-    if agents := [a for a in ("kyc", "txn", "screening") if a in findings]:
+    if agents := [a for a in ("kyc", "txn", "screening", "network", "typology") if a in findings]:
         return [
             f"[{node:<9}] {specialist_line(a, findings[a])}, {len(out.get('evidence', []))} evidence items"
             for a in agents
@@ -56,8 +65,15 @@ def describe_update(node: str, out: dict | None) -> list[str]:
                 f"({n['reason_code']})"]
     if node == "qa":
         issues = out["qa_issues"]
-        status = "PASS" if not issues else f"{len(issues)} issue(s) -> rework {out['rework_target']}"
-        return [f"[qa]        round {out['qa_rounds']}: {status}"] + [
+        critic = findings.get("qa")
+        verdict = (f"critic {'passed' if critic['passed'] else 'failed'}" if critic else "code checks only")
+        if not issues:
+            status = "PASS"
+        elif out["rework_target"]:
+            status = f"{len(issues)} issue(s) -> rework {out['rework_target']}"
+        else:
+            status = f"PASS with {len(issues)} minor note(s)"
+        return [f"[qa]        round {out['qa_rounds']}: {status} ({verdict})"] + [
             f"            - [{i['severity']}] {i['target_agent']}: {i['description']}" for i in issues
         ]
     if node == "human_review":
@@ -258,6 +274,8 @@ def main() -> None:
     gen_p.add_argument("--seed", type=int, default=42)
     data_sub.add_parser("load", help="Load the fixtures and generated dataset into Postgres "
                                      "(recreates the data tables and clears case runs)")
+    data_sub.add_parser("kb", help="Embed the policy documents into the pgvector knowledge base")
+    data_sub.add_parser("graph", help="Load the customer network into Neo4j and compute scores (GDS)")
 
     eval_p = sub.add_parser("eval", help="Run alerts with ground truth up to human review and score them")
     eval_p.add_argument("--n", type=int, default=20, help="Number of cases (stratified across typologies)")
@@ -305,6 +323,16 @@ def main() -> None:
 
         counts = load(settings.dataset_paths, settings.pg_dsn)
         print(f"Loaded into {settings.pg_dsn.rsplit('@', 1)[-1]}\n{json.dumps(counts, indent=2)}")
+    elif args.command == "data" and args.data_command == "kb":
+        from sentinel.kb import load_policies
+
+        print(f"Embedded {load_policies()} policy sections into kb.policy_chunks ({settings.model_embedding})")
+    elif args.command == "data" and args.data_command == "graph":
+        from sentinel.graphdb import load_graph
+
+        if not settings.neo4j_uri:
+            parser.error("set SENTINEL_NEO4J_URI (and user/password) in .env")
+        print(f"Loaded the customer network into Neo4j: {json.dumps(load_graph())}")
     elif args.command == "eval":
         from sentinel.evaluate import evaluate
 

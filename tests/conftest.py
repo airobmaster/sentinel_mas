@@ -29,8 +29,17 @@ def offline_settings(request, monkeypatch):
     monkeypatch.setattr(settings, "dataset_paths", [FIXTURES])
     monkeypatch.setattr(settings, "tool_mode", "local")
     monkeypatch.setattr(settings, "opa_url", None)
-    data.backend.cache_clear()
-    factory._specialists.clear()
+    monkeypatch.setattr(settings, "qa_llm_critic", False)
+    monkeypatch.setattr(settings, "neo4j_uri", None)
+    reset_caches()
     yield
+    reset_caches()
+
+
+def reset_caches() -> None:
+    from sentinel import graphdb, kb
+
     data.backend.cache_clear()
+    graphdb.network.cache_clear()
+    kb.policy_kb.cache_clear()
     factory._specialists.clear()
