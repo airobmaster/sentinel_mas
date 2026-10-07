@@ -26,11 +26,13 @@ from langgraph.types import Command
 from sentinel import data, kafka
 from sentinel.cli import describe_update
 from sentinel.config import REPO_ROOT, settings
-from sentinel.events import ALERTS_TOPIC, DECISIONS_TOPIC, AlertEvent, DecisionEvent
-from sentinel.graph import build_graph, compile_graph, initial_state, run_config
-from sentinel.hitl import validate_decision
-from sentinel.persistence import (OPEN_STATUSES, STATUS_AFTER_DECISION, case_status, list_cases, reset_case,
-                                  sync_checkpointer)
+from sentinel.events import (ALERTS_TOPIC, DECISIONS_TOPIC, FOLLOWUPS_TOPIC, AlertEvent, ApprovalEvent,
+                             DecisionEvent, FollowUpEvent)
+from sentinel.graph import build_graph, compile_graph, follow_up_state, initial_state, run_config
+from sentinel.guardrails.pii import PiiVault
+from sentinel.hitl import validate_approval, validate_decision
+from sentinel.persistence import (OPEN_STATUSES, STATUS_AFTER_DECISION, case_status, case_thread, list_cases,
+                                  reset_case, sync_checkpointer)
 from sentinel.schemas import REASON_CODES
 
 if sys.platform == "win32":  # psycopg's async driver cannot use the default Proactor loop on Windows
@@ -38,8 +40,8 @@ if sys.platform == "win32":  # psycopg's async driver cannot use the default Pro
 
 ALERT_DIR = REPO_ROOT / "data" / "fixtures" / "alerts"
 ACTIONS = list(REASON_CODES)
-STATUS_ICON = {"new": "⚪", "in_progress": "🔵", "awaiting_review": "🟡", "closed": "🟢", "escalated": "🔴",
-               "info_requested": "🟣", "error": "⛔", None: "⚪"}
+STATUS_ICON = {"new": "⚪", "in_progress": "🔵", "awaiting_approval": "🟠", "awaiting_review": "🟡", "closed": "🟢",
+               "escalated": "🔴", "info_requested": "🟣", "error": "⛔", None: "⚪"}
 TERMINAL = ("closed", "escalated", "info_requested")
 ALL_STATUSES = list(OPEN_STATUSES) + list(TERMINAL) + ["error"]
 DIRECT, KAFKA = "Direct (in-process)", "Kafka (full stack)"
@@ -80,6 +82,7 @@ html, body, .stApp, .stMarkdown, p, li, label, input, textarea, button, h1, h2, 
 .sn-pill.new { background: #EEF1F5; color: #4A5568; }
 .sn-pill.in_progress { background: #E3F0FF; color: #0B5CAD; }
 .sn-pill.awaiting_review { background: #FFF4D6; color: #8A5A00; }
+.sn-pill.awaiting_approval { background: #FFE8D6; color: #9A4A00; }
 .sn-pill.closed { background: #E3F6EA; color: #1E7B45; }
 .sn-pill.escalated { background: #FDE7E7; color: #B42318; }
 .sn-pill.info_requested { background: #F1E8FF; color: #6B3FA0; }
@@ -106,10 +109,11 @@ def pill(status: str | None) -> str:
 
 @st.cache_data(ttl=30, show_spinner=False)
 def knowledge_sources() -> dict[str, tuple[str, bool]]:
-    """Which graph and policy-search backends answer, and whether they are up (checked every 30 s)."""
+    """Which graph, policy-search and PII backends answer, and whether they are up (checked every 30 s)."""
     from sentinel import graphdb, kb
+    from sentinel.guardrails.pii import presidio_status
 
-    return {"Graph": graphdb.describe_backend(), "Policy KB": kb.describe_backend()}
+    return {"Graph": graphdb.describe_backend(), "Policy KB": kb.describe_backend(), "PII": presidio_status()}
 
 
 def header(mode: str) -> None:
@@ -168,8 +172,102 @@ def decision_form(case_id: str, packet: dict) -> dict | None:
     return decision
 
 
+def approval_form(case_id: str, draft: dict) -> dict | None:
+    """UC-03: approve, edit or reject the drafted customer information request."""
+    st.markdown("#### Customer information request — approval needed")
+    rail = draft.get("rail", {})
+    if rail.get("passed"):
+        st.success(f"Tipping-off rail passed (draft attempt {rail.get('attempts', 1)}): no suspicion, investigation, "
+                   "report or legal conclusion is mentioned.")
+    else:
+        st.error(f"Tipping-off rail failed: {', '.join(rail.get('violations', []))}. Edit or reject it.")
+    message = st.text_area("Message to the customer", draft["message"], key=f"msg-{case_id}")
+    questions = st.text_area("Questions (one per line)", "\n".join(draft["questions"]), key=f"qs-{case_id}")
+    approver = st.text_input("Approver ID", "INV-0002", key=f"approver-{case_id}")
+    c1, c2, c3 = st.columns(3)
+    action = ("approve" if c1.button("Approve", type="primary", key=f"approve-{case_id}") else
+              "edit" if c2.button("Approve with my edits", key=f"edit-{case_id}") else
+              "reject" if c3.button("Reject", key=f"reject-{case_id}") else None)
+    if not action:
+        return None
+    approval = {"action": action, "approver_id": approver, "decided_at": now()}
+    if action == "edit":
+        approval |= {"message": message, "questions": [q.strip() for q in questions.splitlines() if q.strip()]}
+    try:
+        validate_approval(approval)
+    except ValueError as e:
+        st.error(str(e))
+        return None
+    return approval
+
+
+def reply_form(case_id: str) -> str | None:
+    """UC-04: simulate the customer's reply, which starts a follow-up investigation."""
+    st.markdown("#### Customer reply")
+    st.caption("The case is waiting for the customer. Simulate their reply to start a follow-up run with it as evidence.")
+    text = st.text_area("Reply from the customer", key=f"reply-{case_id}",
+                        placeholder="e.g. The payment was the proceeds of selling my car; the invoice is attached.")
+    if st.button("Send customer reply", type="primary", key=f"send-reply-{case_id}") and text.strip():
+        return text.strip()
+    return None
+
+
+def render_security(values: dict, case_id: str, legal_entity: str) -> None:
+    """Guardrail activity for this case: injections caught, tools denied, budgets, PII, red-team probe."""
+    events = values.get("security_events") or []
+    usage = values.get("usage") or {}
+    tokens = sum(u.get("input_tokens", 0) + u.get("output_tokens", 0) for u in usage.values())
+    kinds = [e["kind"] for e in events]
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Injections caught", kinds.count("injection_detected"))
+    c2.metric("Tool calls denied", kinds.count("tool_denied"))
+    c3.metric("Tokens used", f"{tokens:,}", help=f"Case budget {settings.case_token_budget:,}")
+    c4.metric("PII values redacted", len(values.get("pii_vault") or {}),
+              help="Models only ever saw tokens such as <PERSON_3fa91c> for these values")
+    if values.get("budget_exceeded"):
+        st.error("Token budget exceeded: the case went to human review without further automated rework.")
+    if events:
+        st.dataframe(pd.DataFrame([{"time": (e.get("at") or "")[11:19], "event": e["kind"], "agent": e["agent"],
+                                    "detail": e["detail"]} for e in events]), width="stretch", hide_index=True)
+    else:
+        st.caption("No security events for this case.")
+    if usage:
+        st.markdown("**Model and tool usage by agent**")
+        st.dataframe(pd.DataFrame([{"agent": a, **u} for a, u in usage.items()]), width="stretch", hide_index=True)
+    st.markdown("**Red-team probe (UC-08)**")
+    st.caption("Sends forged calls to forbidden tools (close_alert, file_sar, …) through the same OPA check "
+               "the agents use. Every one must be denied and logged.")
+    if st.button("Run red-team probe", key=f"probe-{case_id}"):
+        from sentinel.redteam import probe
+
+        try:
+            state[f"probe-{case_id}"] = asyncio.run(probe(case_id, legal_entity))
+        except RuntimeError as e:
+            st.warning(str(e))
+    if rows := state.get(f"probe-{case_id}"):
+        denied = sum(r["denied"] for r in rows)
+        (st.success if denied == len(rows) else st.error)(f"{denied}/{len(rows)} forged tool calls denied by OPA")
+        st.dataframe(pd.DataFrame([{"agent": r["agent"], "tool": r["tool"], "result": "DENIED" if r["denied"] else
+                                    "ALLOWED", "attempt": r["attempt"], "reason": r["reason"]} for r in rows]),
+                     width="stretch", hide_index=True)
+
+
+def for_display(values: dict) -> dict:
+    """Agents' outputs carry PII tokens; investigators see the real values unless they choose not to."""
+    if not state.get("show_pii", True):
+        return values
+    vault = PiiVault(mapping=values.get("pii_vault"))
+    return {**values, **{k: vault.restore(values[k]) for k in ("narrative", "findings", "info_request",
+                                                                  "qa_issues", "follow_up") if values.get(k)}}
+
+
 def render_case(alert: dict, status: str | None, values: dict, packet: dict | None, events: list[dict],
-                on_decision, decision_note: str | None = None) -> None:
+                on_decision, decision_note: str | None = None, on_approval=None, on_reply=None) -> None:
+    raw_values = values
+    values = for_display(values)
+    if packet and packet.get("kind") == "approval":
+        packet = {**packet, "draft": for_display({"info_request": packet["draft"], "pii_vault":
+                                                   raw_values.get("pii_vault")})["info_request"]}
     narrative = values.get("narrative") or {}
     findings = values.get("findings", {})
     typology = findings.get("typology") or {}
@@ -185,9 +283,15 @@ def render_case(alert: dict, status: str | None, values: dict, packet: dict | No
               + f" · {values.get('qa_rounds', 0)} rd")
     c6.metric("Evidence items", len(evidence))
 
-    review, typology_tab, network_tab, findings_tab, evidence_tab, trace_tab, raw_tab = st.tabs(
-        ["Review", "Typology & policy", "Network", "Findings", "Evidence", "Trace", "Raw state"])
+    review, typology_tab, network_tab, security_tab, findings_tab, evidence_tab, trace_tab, raw_tab = st.tabs(
+        ["Review", "Typology & policy", "Network", "Security", "Findings", "Evidence", "Trace", "Raw state"])
     with review:
+        if follow_up := values.get("follow_up"):
+            st.info(f"**Follow-up round {follow_up['round']}** after a request for information. "
+                    f"Customer reply: “{follow_up['reply_text']}”")
+        if (security := raw_values.get("security_events")) and any(e["kind"] == "injection_detected" for e in security):
+            st.warning("A record in this case contained instruction-like text. It was fenced off as data and did "
+                       "not change what the agents could do (see the Security tab).")
         serious = [i for i in values.get("qa_issues", []) if i["severity"] in ("blocker", "major")]
         notes = [i for i in values.get("qa_issues", []) if i["severity"] == "minor"]
         if serious:
@@ -213,13 +317,25 @@ def render_case(alert: dict, status: str | None, values: dict, packet: dict | No
         if narrative.get("open_questions"):
             st.markdown("**Open questions**")
             st.markdown("\n".join(f"- {q}" for q in narrative["open_questions"]))
+        request = values.get("info_request")
+        if request and not (packet and packet.get("kind") == "approval"):
+            with st.expander(f"Customer information request · {request['status'].replace('_', ' ')}",
+                             expanded=request["status"] != "rejected"):
+                st.markdown(request["message"] + "\n\n" + "\n".join(f"- {q}" for q in request["questions"]))
+                if request.get("approver_id"):
+                    st.caption(f"Decided by {request['approver_id']}")
         st.divider()
-        if values.get("decision"):
+        if decision_note:
+            st.info(decision_note)
+        elif packet and packet.get("kind") == "approval":
+            if on_approval and (approval := approval_form(alert["case_id"], packet["draft"])):
+                on_approval(approval)
+        elif values.get("decision"):
             d = values["decision"]
             st.success(f"Decision recorded: **{d['action']}** ({d['reason_code']}) by {d['investigator_id']}"
                        + ("" if d.get("agree_with_recommendation") else " — overrides the recommendation"))
-        elif decision_note:
-            st.info(decision_note)
+            if d["action"] == "request_info" and on_reply and (reply := reply_form(alert["case_id"])):
+                on_reply(reply)
         elif packet:
             if decision := decision_form(alert["case_id"], packet):
                 on_decision(decision)
@@ -229,6 +345,8 @@ def render_case(alert: dict, status: str | None, values: dict, packet: dict | No
         render_typology(typology, evidence)
     with network_tab:
         render_network(findings.get("network"), values.get("tier"), evidence, alert["customer_id"])
+    with security_tab:
+        render_security(raw_values, alert["case_id"], alert.get("legal_entity", "UK"))
     with findings_tab:
         for agent in ("triage", "kyc", "txn", "screening", "network", "typology", "qa"):
             if agent in findings:
@@ -242,7 +360,7 @@ def render_case(alert: dict, status: str | None, values: dict, packet: dict | No
         st.markdown("**Prompt / model versions**")
         st.json(values.get("versions", {}))
     with raw_tab:
-        st.json(values)
+        st.json(raw_values)
 
 
 def render_typology(typology: dict, evidence: dict) -> None:
@@ -357,6 +475,9 @@ def execute(case_id: str, payload, config: dict, label: str):
         def on_update(node: str, out: dict, elapsed: float) -> None:
             lines = describe_update(node, out) or [f"[{node}]"]
             emit(case_id, "node_completed", node, "; ".join(l.split("]", 1)[-1].strip() for l in lines))
+            for event in out.get("security_events") or []:
+                emit(case_id, "security_event", node, f"{event['kind']}: {event['detail']}", event.get("data"))
+                st.write(f"`{elapsed:5.1f}s` 🛡️ {event['kind']}: {event['detail']}")
             for line in lines:
                 st.write(f"`{elapsed:5.1f}s` {line}")
 
@@ -379,10 +500,18 @@ def direct_run(alert: dict) -> None:
                                                "values": {}, "packet": None, "updated": now()}
     emit(case_id, "case_started", data_={"scenario": alert["scenario_code"]})
     snap = execute(case_id, initial_state(alert), run_config(thread_id), f"Investigating {case_id}")
+    record_pause(case_id, state.direct[case_id], snap)
+
+
+def record_pause(case_id: str, run: dict, snap) -> None:
+    """Where the run is waiting: the approval of a customer request (UC-03) or the disposition."""
     packet = snap.interrupts[0].value if snap.interrupts else None
-    run = state.direct[case_id]
-    run.update(values=snap.values, packet=packet, status="awaiting_review" if packet else "error", updated=now())
-    if packet:
+    kind = (packet or {}).get("kind")
+    status = "awaiting_approval" if kind == "approval" else "awaiting_review" if packet else "error"
+    run.update(values=snap.values, packet=packet, status=status, updated=now())
+    if kind == "approval":
+        emit(case_id, "awaiting_approval", data_={"rail_passed": packet["draft"]["rail"]["passed"]})
+    elif packet:
         emit(case_id, "awaiting_review", data_={"recommendation": packet["recommendation"],
                                                 "reason_code": packet["reason_code"], "tier": packet["tier"]})
 
@@ -406,8 +535,23 @@ def direct_case_view(case_id: str, alert: dict, run_now: bool) -> None:
                                                  "investigator_id": decision["investigator_id"]})
         st.rerun()
 
+    def on_approval(approval: dict) -> None:
+        snap = execute(case_id, Command(resume=approval), run_config(run["thread_id"]), "Recording approval")
+        emit(case_id, "approval_applied", data_={"action": approval["action"], "approver_id": approval["approver_id"]})
+        record_pause(case_id, run, snap)
+        st.rerun()
+
+    def on_reply(text: str) -> None:
+        follow = follow_up_state(run["values"], run["thread_id"], text, now())
+        run["thread_id"] = f"{run['thread_id']}:r{follow['follow_up']['round']}"
+        emit(case_id, "follow_up_started", data_={"thread": run["thread_id"]})
+        snap = execute(case_id, follow, run_config(run["thread_id"]), "Follow-up investigation with the customer reply")
+        record_pause(case_id, run, snap)
+        st.rerun()
+
     events = [e for e in state.get("direct_events", []) if e["case_id"] == case_id]
-    render_case(run["alert"], run["status"], run["values"], run["packet"], events, on_decision)
+    render_case(run["alert"], run["status"], run["values"], run["packet"], events, on_decision,
+                on_approval=on_approval, on_reply=on_reply)
 
 
 def direct_mode(alert: dict, run_now: bool) -> None:
@@ -442,10 +586,18 @@ def pg_host_port() -> str:
 
 
 def load_snapshot(case_id: str) -> tuple[dict, dict | None]:
-    """Case state from the Postgres checkpointer (no agents run here)."""
+    """Case state of the current run thread from the Postgres checkpointer (no agents run here)."""
     with sync_checkpointer() as saver:
-        snap = build_graph().compile(checkpointer=saver).get_state(run_config(case_id))
+        snap = build_graph().compile(checkpointer=saver).get_state(run_config(case_thread(case_id)))
     return snap.values, (snap.interrupts[0].value if snap.interrupts else None)
+
+
+def publish_approval(case_id: str, approval: dict) -> None:
+    asyncio.run(kafka.publish(DECISIONS_TOPIC, [ApprovalEvent(case_id=case_id, **approval)]))
+
+
+def publish_reply(case_id: str, text: str) -> None:
+    asyncio.run(kafka.publish(FOLLOWUPS_TOPIC, [FollowUpEvent(case_id=case_id, reply_text=text)]))
 
 
 def publish_alert(alert: dict) -> None:
@@ -499,22 +651,38 @@ def kafka_case_view(case_id: str) -> None:
 
     values, packet = load_snapshot(case_id)
     events = asyncio.run(kafka.read_events(case_id))
-    note = None
-    if status == "awaiting_review" and pending.get(case_id) == "decision":
-        note = "Decision published to Kafka; waiting for the worker to apply it."
+    waiting = {("awaiting_review", "decision"): "Decision published to Kafka; waiting for the worker to apply it.",
+               ("awaiting_approval", "approval"): "Approval published to Kafka; waiting for the worker to apply it.",
+               ("info_requested", "reply"): "Customer reply published to Kafka; waiting for the worker to start "
+                                            "the follow-up investigation."}
+    sent = pending.get(case_id)
+    if isinstance(sent, tuple) and sent[1] != status:  # the worker has moved the case on since we published
+        pending.pop(case_id, None)
+        sent = None
+    note = waiting.get((status, sent[0])) if isinstance(sent, tuple) else None
     if status in TERMINAL and not values.get("decision"):
         note = f"Case is {status}."
 
-    def on_decision(decision: dict) -> None:
-        publish_decision(case_id, decision)
-        pending[case_id] = "decision"
+    def published(kind: str) -> None:
+        pending[case_id] = (kind, status)  # remembered until the status changes
         st.rerun()
 
-    render_case(alert, status, values, packet, events, on_decision, note)
-    if note and status == "awaiting_review":
-        live_progress(case_id, status, "waiting for the decision to be applied")
+    def on_decision(decision: dict) -> None:
+        publish_decision(case_id, decision)
+        published("decision")
+
+    def on_approval(approval: dict) -> None:
+        publish_approval(case_id, approval)
+        published("approval")
+
+    def on_reply(text: str) -> None:
+        publish_reply(case_id, text)
+        published("reply")
+
+    render_case(alert, status, values, packet, events, on_decision, note, on_approval=on_approval, on_reply=on_reply)
+    if note and status in ("awaiting_review", "awaiting_approval", "info_requested"):
+        live_progress(case_id, status, note)
     if status in TERMINAL:
-        pending.pop(case_id, None)
         if st.button("Send another decision", help="Should be ignored: the case is no longer waiting for review"):
             publish_decision(case_id, {"action": "close", "reason_code": "FP_DATA_ERROR",
                                        "investigator_id": "INV-0001"})
@@ -547,6 +715,9 @@ def select_case() -> None:
 
 with st.sidebar:
     mode = st.radio("Mode", [DIRECT, KAFKA], help="Kafka mode needs the Docker stack and `sentinel worker all`")
+    st.toggle("Show customer data", value=True, key="show_pii",
+              help="Agents only ever see PII as tokens such as <PERSON_3fa91c>. Switch off to see exactly what "
+                   "the models saw.")
     st.subheader("Select alert")
     truth = data.ground_truth()
     source = st.radio("Source", ["Data backend", "Fixture file"], horizontal=True)

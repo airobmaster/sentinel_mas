@@ -10,7 +10,8 @@ import pytest
 
 from sentinel import kafka, persistence
 from sentinel.config import REPO_ROOT
-from sentinel.events import ALERTS_TOPIC, CASE_EVENTS_TOPIC, DECISIONS_TOPIC, AlertEvent, DecisionEvent
+from sentinel.events import (ALERTS_TOPIC, CASE_EVENTS_TOPIC, DECISIONS_TOPIC, FOLLOWUPS_TOPIC, AlertEvent,
+                             ApprovalEvent, DecisionEvent, FollowUpEvent)
 from sentinel.graph import compile_graph, run_config
 from sentinel.persistence import durable_state
 from sentinel.workers import HANDLERS, run_worker
@@ -81,4 +82,46 @@ async def test_alert_and_decision_round_trip_through_kafka():
             await events.stop()
             await prod.stop()
             async with cases.pool.connection() as conn:  # leave the loaded dataset as it was
+                await conn.execute("DELETE FROM cases.alerts WHERE case_id = %s", (case_id,))
+
+
+async def test_request_info_approval_and_follow_up_through_kafka():
+    """UC-03 + UC-04 over Kafka: approval pause -> approval -> request_info -> customer reply -> follow-up."""
+    base = json.loads((REPO_ROOT / "data" / "fixtures" / "alerts" / "CASE-0002.json").read_text(encoding="utf-8"))
+    case_id = f"CASE-IT-{uuid.uuid4().hex[:8]}"
+    stop = asyncio.Event()
+
+    async with durable_state() as (checkpointer, cases):
+        graph = compile_graph(checkpointer=checkpointer, nodes=stubs.request_info_nodes())
+        worker = asyncio.create_task(run_worker(graph, cases, HANDLERS["all"], concurrency=2, stop=stop))
+        events = kafka.consumer(CASE_EVENTS_TOPIC, group_id=None)
+        prod = kafka.producer()
+        await events.start()
+        await prod.start()
+        try:
+            await kafka.send(prod, ALERTS_TOPIC, AlertEvent.model_validate({**base, "case_id": case_id}))
+            await wait_for(events, case_id, "awaiting_approval")
+            assert await cases.status(case_id) == "awaiting_approval"
+
+            await kafka.send(prod, DECISIONS_TOPIC, ApprovalEvent(case_id=case_id, action="approve", approver_id="INV-2"))
+            await wait_for(events, case_id, "awaiting_review")
+            await kafka.send(prod, DECISIONS_TOPIC, DecisionEvent(
+                case_id=case_id, action="request_info", reason_code="SOURCE_OF_FUNDS", investigator_id="INV-IT"))
+            await wait_for(events, case_id, "decision_applied")
+            assert await cases.status(case_id) == "info_requested"
+
+            await kafka.send(prod, FOLLOWUPS_TOPIC, FollowUpEvent(case_id=case_id, reply_text="Car sale proceeds."))
+            started = await wait_for(events, case_id, "follow_up_started")
+            assert started["data"]["thread"] == f"{case_id}:r1"
+            await wait_for(events, case_id, "awaiting_approval")  # the stubs ask for information again
+            assert await cases.thread_for(case_id) == f"{case_id}:r1"
+            follow = await graph.aget_state(run_config(f"{case_id}:r1"))
+            assert follow.values["follow_up"]["reply_text"] == "Car sale proceeds."
+        finally:
+            stop.set()
+            await asyncio.wait_for(worker, 15)
+            await events.stop()
+            await prod.stop()
+            async with cases.pool.connection() as conn:
+                await conn.execute("DELETE FROM cases.customer_replies WHERE case_id = %s", (case_id,))
                 await conn.execute("DELETE FROM cases.alerts WHERE case_id = %s", (case_id,))

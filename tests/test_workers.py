@@ -17,13 +17,20 @@ DECISION = json.dumps({"case_id": "CASE-0001", "action": "escalate", "reason_cod
 
 class FakeCases:
     def __init__(self):
-        self.status = {}
+        self.status, self.threads, self.replies = {}, {}, {}
 
-    async def start(self, alert):
+    async def start(self, alert, thread_id=None):
         self.status[alert["case_id"]] = "in_progress"
+        self.threads[alert["case_id"]] = thread_id or alert["case_id"]
 
     async def set_status(self, case_id, status):
         self.status[case_id] = status
+
+    async def thread_for(self, case_id):
+        return self.threads.get(case_id, case_id)
+
+    async def save_reply(self, case_id, round_no, text, received_at):
+        self.replies[(case_id, round_no)] = text
 
 
 @pytest.fixture

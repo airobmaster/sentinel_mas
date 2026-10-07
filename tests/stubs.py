@@ -34,8 +34,41 @@ def narrative(citations: list[str]):
     return node
 
 
+REQUEST_INFO = {"recommendation": "request_info", "reason_code": "SOURCE_OF_FUNDS"}
+
+
+async def typology_request_info(state):
+    out = await typology(state)
+    out["findings"]["typology"] |= REQUEST_INFO
+    return out
+
+
+def narrative_request_info(citations: list[str]):
+    inner = narrative(citations)
+
+    async def node(state):
+        out = await inner(state)
+        out["narrative"] |= REQUEST_INFO | {"open_questions": ["What is the source of the funds?"]}
+        return out
+
+    node.calls = inner.calls
+    return node
+
+
+async def draft_info_request(state):
+    return {"info_request": {"questions": ["Please tell us where the funds came from."],
+                             "message": "We are updating our records.", "status": "awaiting_approval",
+                             "rail": {"passed": True, "violations": [], "attempts": 1}}}
+
+
 def nodes(**overrides) -> dict:
     """A full set of stubbed agent nodes for compile_graph(nodes=...)."""
     return {"kyc": specialist("kyc", "crm:N1"), "txn": specialist("txn", "txn:TXN-1006"),
             "screening": specialist("screening", "list:OFSI:X"), "network": specialist("network", "graph:C1"),
-            "typology": typology, "narrative": narrative(["txn:TXN-1006"]), **overrides}
+            "typology": typology, "narrative": narrative(["txn:TXN-1006"]),
+            "draft_info_request": draft_info_request, **overrides}
+
+
+def request_info_nodes(**overrides) -> dict:
+    """Stubs for a case whose recommendation is request_info (UC-03 / UC-04 path)."""
+    return nodes(typology=typology_request_info, narrative=narrative_request_info(["txn:TXN-1006"]), **overrides)

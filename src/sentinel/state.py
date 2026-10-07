@@ -29,6 +29,23 @@ def merge_dicts(left: dict, right: dict) -> dict:
     return {**(left or {}), **(right or {})}
 
 
+def add_events(left: list, right: list) -> list:
+    """Security events accumulate across agents and rework rounds."""
+    return [*(left or []), *(right or [])]
+
+
+USAGE_KEYS = ("input_tokens", "output_tokens", "model_calls", "tool_calls")
+
+
+def add_usage(left: dict, right: dict) -> dict:
+    """Per-agent token and call counts, summed across rework rounds."""
+    merged = dict(left or {})
+    for agent, usage in (right or {}).items():
+        current = merged.get(agent, {})
+        merged[agent] = {k: current.get(k, 0) + usage.get(k, 0) for k in USAGE_KEYS}
+    return merged
+
+
 class CaseState(TypedDict):
     case_id: str
     legal_entity: str
@@ -42,3 +59,11 @@ class CaseState(TypedDict):
     rework_target: NotRequired[str | None]
     decision: NotRequired[dict | None]  # written ONLY by human_review
     versions: Annotated[dict, merge_dicts]  # prompt/model versions per agent, for audit
+    # Guardrails (Slice 6)
+    security_events: Annotated[list[dict], add_events]  # injections caught, tools denied, budget hits
+    usage: Annotated[dict, add_usage]  # tokens and calls per agent
+    pii_vault: Annotated[dict, merge_dicts]  # token -> original value; models only ever see the tokens
+    budget_exceeded: NotRequired[bool]
+    # Extended human-in-the-loop (Slice 6)
+    info_request: NotRequired[dict | None]  # UC-03 customer information request: draft, rail result, approval
+    follow_up: NotRequired[dict | None]  # UC-04: round, prior thread, customer reply

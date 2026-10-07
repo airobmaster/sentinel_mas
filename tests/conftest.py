@@ -31,6 +31,7 @@ def offline_settings(request, monkeypatch):
     monkeypatch.setattr(settings, "opa_url", None)
     monkeypatch.setattr(settings, "qa_llm_critic", False)
     monkeypatch.setattr(settings, "neo4j_uri", None)
+    monkeypatch.setattr(settings, "presidio_url", None)  # pattern rules only: deterministic, no service
     reset_caches()
     yield
     reset_caches()

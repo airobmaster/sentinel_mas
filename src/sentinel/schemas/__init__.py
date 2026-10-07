@@ -125,6 +125,13 @@ class QAReport(BaseModel):
                                                 "red_flags_covered, no_tipping_off, neutral_language")
 
 
+class CustomerInfoRequest(BaseModel):
+    """UC-03: customer-facing request for information. Must never reveal suspicion (BR-11)."""
+
+    questions: list[str] = Field(min_length=1, max_length=5, description="Plain-language questions")
+    message: str = Field(description="A short, polite message to the customer that introduces the questions")
+
+
 class Claim(BaseModel):
     text: str = Field(description="One factual statement")
     evidence_ids: list[str] = Field(description="At least one ID from the evidence catalogue")

@@ -68,6 +68,11 @@ services:
       kafka:
         condition: service_healthy
 
+  presidio:
+    # PII detection (spaCy en_core_web_lg) as a service; models only ever see redaction tokens
+    image: mcr.microsoft.com/presidio-analyzer:latest
+    ports: ["5002:3000"]
+
   opa:
     image: openpolicyagent/opa:latest
     # --watch reloads tools.rego / data.json when they change, so the running allow-list never goes stale

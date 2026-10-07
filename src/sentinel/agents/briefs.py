@@ -85,6 +85,17 @@ def brief_for(agent: str, state: CaseState) -> str:
             f"Evidence catalogue (cite only these IDs):\n{_evidence_lines(state.get('evidence', []))}\n\n"
             f"Allowed reason codes:\n{json.dumps(REASON_CODES, indent=2)}"
         )
+    elif agent == "customer_request":
+        customer = data.get_customer(alert["customer_id"]) or {}
+        narrative = state.get("narrative") or {}
+        typology = state.get("findings", {}).get("typology") or {}
+        brief = (
+            f"Customer name placeholder: {customer.get('name', 'Customer')}\n"
+            f"Why information is needed (internal, never quote this to the customer): "
+            f"{typology.get('rationale', '')}\n"
+            "Open questions from the case:\n" + "\n".join(f"- {q}" for q in narrative.get("open_questions", []))
+        )
+        return brief  # no tools, no rework history
     elif agent == "qa":
         findings = _findings(state, ("triage", "kyc", "txn", "screening", "network", "typology"))
         brief = (
@@ -96,9 +107,30 @@ def brief_for(agent: str, state: CaseState) -> str:
         return brief  # the critic reviews the current draft; it has no tools and no rework history
     else:
         raise ValueError(f"No brief for agent {agent!r}")
+    if agent in FOLLOW_UP_AGENTS:
+        brief += _follow_up_section(state)
     if agent != "narrative":
         brief += f"\nlegal_entity: {state['legal_entity']} (pass it to every tool call)"
     return brief + _qa_section(agent, state)
+
+
+FOLLOW_UP_AGENTS = ("kyc", "typology", "narrative", "qa")
+
+
+def _follow_up_section(state: CaseState) -> str:
+    """UC-04: a follow-up run after a request for information sees the reply and the previous review."""
+    follow_up = state.get("follow_up")
+    if not follow_up:
+        return ""
+    questions = "\n".join(f"- {q}" for q in follow_up.get("questions") or []) or "- (not recorded)"
+    return (
+        f"\n\nFOLLOW-UP ROUND {follow_up['round']} after a request for information.\n"
+        f"Questions the customer was asked:\n{questions}\n"
+        f"Customer reply (cite {follow_up['reply_id']}): {follow_up['reply_text']}\n"
+        f"Previous review (cite {follow_up['prior_ref']}): {follow_up['prior_summary']}\n"
+        "Assess whether the reply answers the questions and explains the activity, and update the "
+        "assessment accordingly."
+    )
 
 
 def _findings(state: CaseState, agents: tuple[str, ...]) -> dict:

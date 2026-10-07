@@ -31,7 +31,8 @@ For each alert, Sentinel:
 4. **Maps the findings to AML typologies and the bank's written procedure**, citing versioned policy sections, and makes the recommendation.
 5. **Drafts a narrative** that explains the recommendation, in which every factual claim cites an evidence ID that a tool actually returned.
 6. **Checks its own work.** Code guards verify citations and completeness. An independent LLM critic, running on a different model, then reviews the case. Serious issues send the work back for one rework.
-7. **Pauses for a human investigator**, who reviews the evidence pack and recommendation, then decides: *close*, *escalate* or *request information*. The decision comes back on the stream and completes the case.
+7. **Asks the customer, with approval.** When more information is needed, Sentinel drafts a neutral customer request. A rail checks the draft for tipping-off, and it waits for an investigator's approval before anything is sent.
+8. **Pauses for a human investigator**, who reviews the evidence pack and recommendation, then decides: *close*, *escalate* or *request information*. The decision comes back on the stream and completes the case. When the customer replies, a follow-up investigation starts with the reply as new evidence.
 
 ### Why an agentic system?
 
@@ -63,16 +64,23 @@ Sentinel is being built in thin end-to-end slices, each tested before the next w
   - QA (code checks plus an independent LLM critic), with one rework loop.
 - **Tools behind MCP servers.** Each agent gets only its own tools, every call is authorised by an OPA policy, and every request is scoped to the case's legal entity.
 - A **synthetic dataset** with planted typologies (including device-sharing mule rings) and known outcomes, loaded into Postgres and Neo4j.
-- **Batch evaluation** against those known outcomes, reporting escalation recall, false escalations and citation validity. On a 24-case sample spanning every typology, run on the full stack:
+- **Batch evaluation** against those known outcomes, reporting escalation recall, false escalations, citation validity and injection catches. On 28 cases run on the full stack with every guardrail on (a sample spanning every typology, plus four cases with planted injection payloads):
   - every must-escalate case was escalated;
   - no benign case was escalated;
   - every outcome was acceptable;
-  - every claim cited real evidence.
+  - every claim cited real evidence;
+  - every planted injection was caught, without changing the outcome.
+- **Guardrails:**
+  - PII redaction: models see reversible tokens, while tools and investigators see the real values. Presidio finds names, and patterns find IBANs, sort codes, emails and phone numbers.
+  - A prompt-injection rail on every tool output. Injection payloads planted in the data are caught and fenced off as untrusted data.
+  - Per-agent model and tool-call limits, and a token budget per case.
+  - A security event log, including OPA denials. A red-team probe shows forged disposition tool calls being denied.
+- **Customer information requests and follow-ups:**
+  - Sentinel drafts the request and checks it for tipping-off, and an investigator approves it.
+  - The customer's reply starts a follow-up investigation on its own checkpointed thread.
 - **Tests:** offline, integration (Docker stack) and live (Bedrock), plus a Streamlit test console for developers.
 
 **Planned**
-- PII and prompt-injection guardrails.
-- Approval steps for high-impact tool calls and customer follow-up requests.
 - Scheduled batch jobs (Airflow).
 - An API and the React investigator workbench.
 - Observability.
@@ -98,8 +106,12 @@ flowchart TD
     R --> Q{QA}
     Q -->|issues, first time| W[Rework the named agent once]
     W --> Q
+    Q -->|request info| D[Draft customer request<br/>tipping-off rail]
+    D --> AP[[Approval<br/>run pauses]]
+    AP --> H
     Q -->|pass, or issues remain| H[[Human review<br/>run pauses]]
     H --> E((Decision recorded))
+    E -.->|customer reply| F[Follow-up run<br/>thread case:rN]
 ```
 
 Each case is one run of a LangGraph `StateGraph`. The run is checkpointed, so it can pause for days at human review and resume exactly where it stopped. Shared case state collects evidence and findings from every agent. Its merge rules (reducers) let parallel agents write at the same time and let a reworked agent replace, rather than duplicate, its earlier output.
@@ -116,15 +128,17 @@ Each case is one run of a LangGraph `StateGraph`. The run is checkpointed, so it
 | **Typology & policy** | Maps the findings to AML typologies and the bank's written procedure for the legal entity, citing versioned sections (e.g. `policy:AML-UK@3.2#4.3`). It sets the risk score and **makes the recommendation**. | Recommendations must rest on documented policy, not on model opinion. | Implemented |
 | **Narrative** | Explains the typology recommendation in a case summary whose claims each cite evidence IDs, with the reason code and open questions. | Investigators need a clear, consistent write-up that they can check line by line against the evidence. | Implemented |
 | **QA critic** | Code checks verify completeness (the lane's checklist), citations and agreement with the recommendation. Then an independent LLM critic on a different model (Claude Haiku 4.5) checks that claims are supported, red flags are covered and there's no tipping-off. Serious issues send work back to the named agent once. | Every case gets automated QA, not a small sample, and a weak case never reaches the investigator silently. | Implemented |
+| **Customer request** | When the recommendation is to request information, drafts up to five neutral questions and a short message to the customer. An output rail rejects any wording that hints at suspicion or legal conclusions, and an investigator must approve, edit or reject the draft. | Asking the customer is often the quickest way to resolve an alert, but tipping off a customer is a criminal offence. | Implemented |
 
 ### Design principles
 
-- **Humans decide.** Every disposition is a LangGraph `interrupt`. Agents only recommend.
+- **Humans decide.** Every disposition, and every message to a customer, is a LangGraph `interrupt`. Agents only recommend.
 - **Impossible, not discouraged.** Dangerous actions have no tool at all. A deny-by-default policy engine (Open Policy Agent) authorises every remaining tool call: the right agent, the right tool, the case's legal entity, and arguments within limits.
 - **Tools are the only data path.** Agents read data only through fixed, parameterised tools served by MCP (Model Context Protocol) servers. Each agent loads only the tools for its role, the servers check a service token, and every request is scoped to the case's legal entity.
 - **Fixed outer graph, free inner loop.** The workflow is deterministic. Autonomy lives only inside each specialist's tool loop, which has a step limit.
 - **Every claim has evidence.** Evidence is collected from what tools actually returned, not from what a model says it found. A code guard rejects any claim citing an unknown ID.
-- **Tool output is data, not instructions.** Prompts tell agents to ignore instructions embedded in records. Injection and PII guardrails are planned.
+- **Tool output is data, not instructions.** An injection rail scans every tool result and fences suspicious content as untrusted data. Even if a model obeyed it, OPA denies any tool the agent should not have.
+- **Models see only what they need.** Customer names, dates of birth and account details are replaced with reversible tokens before any model call, and they are restored only for tools and investigators.
 - **Auditability.** Every run records the prompt and model version of each agent.
 
 ---
@@ -151,7 +165,7 @@ Each case is one run of a LangGraph `StateGraph`. The run is checkpointed, so it
 | Durable runs | LangGraph `AsyncPostgresSaver`: cases pause for days at human review and survive restarts | In use |
 | Scheduling | Apache Airflow (list refreshes, graph rebuilds, alert replay) | Planned |
 | Documents | Docling for PDF/Word policy manuals (Markdown manuals are chunked directly today) | Planned |
-| Guardrails | Presidio (PII), prompt-injection rails | Planned |
+| Guardrails | Presidio analyzer (PII names) with pattern matching and reversible tokens; prompt-injection and tipping-off rails; LangChain call-limit middleware and a per-case token budget | In use |
 | API & UI | FastAPI service, React investigator workbench | Planned |
 | Evaluation tooling | DeepEval, Promptfoo, LangSmith experiments | Planned |
 | Observability | OpenTelemetry, Tempo, Prometheus, Grafana, LangSmith (development only) | Planned |
@@ -178,10 +192,10 @@ Settings can be overridden with environment variables or a `.env` file, for exam
 | Mode | What runs | Setup |
 |---|---|---|
 | **In-process** (default) | Tools run inside the agent process on JSON datasets, with an in-memory graph and keyword policy search. No Docker needed. | Nothing extra |
-| **Full stack** | Postgres (+pgvector), Kafka, OPA and six MCP tool servers in Docker, plus Neo4j with Graph Data Science (e.g. Neo4j Desktop). Agents call tools over MCP, and OPA authorises every call | See below |
+| **Full stack** | Postgres (+pgvector), Kafka, OPA, Presidio and six MCP tool servers in Docker, plus Neo4j with Graph Data Science (e.g. Neo4j Desktop). Agents call tools over MCP, and OPA authorises every call | See below |
 
 ```bash
-docker compose up -d --build     # Postgres, Kafka + UI (localhost:8080), OPA, MCP servers
+docker compose up -d --build     # Postgres, Kafka + UI (localhost:8080), OPA, Presidio, MCP servers
 cp .env.example .env             # data=postgres, tools=mcp, OPA on, local Kafka; add your Neo4j connection
 sentinel data generate           # synthetic dataset -> data/generated/dataset.json
 sentinel data load               # fixtures + generated dataset -> Postgres
@@ -220,7 +234,11 @@ The case view adds two more tabs:
 - **Typology & policy:** the cited policy sections.
 - **Network:** a diagram of linked customers and shared devices.
 
-The header shows which knowledge sources are live: the graph (Neo4j or in-memory) and the policy knowledge base (pgvector or keyword search).
+- **Security:** injections caught, tool calls denied, PII values redacted, and token usage per agent, with a button that runs the red-team probe.
+
+When a case needs customer information, the case view shows an approval dialog for the drafted request (approve, edit or reject). After the decision, a form lets you enter the customer's reply, which starts the follow-up run. A sidebar toggle shows or hides the real customer data behind the PII tokens.
+
+The header shows which knowledge sources are live: the graph (Neo4j or in-memory), the policy knowledge base (pgvector or keyword search) and PII detection (Presidio or patterns only).
 
 The modes differ in where the case runs:
 - **Direct (in-process):** runs alerts inside the console, with no Docker needed. The queue and event stream cover this browser session.
@@ -242,7 +260,12 @@ sentinel kafka tail                          # terminal 2: live case events
 sentinel kafka publish --sample 10           # terminal 3: 10 alerts across all typologies
 sentinel kafka decide --accept               # accept the recommendation on every case awaiting review
 sentinel kafka decide CASE-G0013 --action escalate --reason-code PASS_THROUGH   # or decide one case
+sentinel kafka approve CASE-0002 --action approve                 # approve a drafted customer request
+sentinel kafka reply CASE-0002 --text "The funds are from my car sale."   # customer reply -> follow-up run
+sentinel redteam --case CASE-0001            # forged disposition tool calls, all denied by OPA
 ```
+
+Customer replies arrive on `aml.case-followups.v1`. Each follow-up runs on its own thread (`CASE-0002:r1`, `CASE-0002:r2`, ...), with the reply and the previous review as evidence.
 
 The workers run on the host because they need your AWS credentials for Bedrock. On AWS they run as containers that get credentials from their task role.
 
@@ -264,7 +287,9 @@ This runs a sample of alerts, spread across every typology, up to the human-revi
 - **escalation recall:** the share of must-escalate cases the system recommends escalating;
 - **false escalation rate;**
 - **agreement** with the expected outcome;
-- **citation validity:** the share of narratives that cite only real evidence.
+- **citation validity:** the share of narratives that cite only real evidence;
+- **injections caught:** the share of cases with planted injection payloads where the rail fired, and whether their outcome stayed acceptable;
+- **mean tokens** per case.
 
 A JSON report is written to `evals/results/`.
 
@@ -285,23 +310,25 @@ SENTINEL_LIVE=1 pytest -m live          # end to end against Bedrock, including 
 src/sentinel/
 ├── graph.py          # workflow: triage → specialists (parallel) → narrative → QA → human review
 ├── state.py          # shared case state and merge rules
-├── agents/           # triage, kyc, txn, screening, narrative, qa + shared agent factory and briefs
+├── agents/           # triage, specialists, narrative, qa, customer request + shared agent factory and briefs
 ├── tools/            # read-only tool functions, per-agent allow-list, MCP client
-├── middleware/       # OPA authorisation of every tool call
+├── middleware/       # OPA authorisation, PII redaction/restore and the injection rail
+├── guardrails/       # PII vault, injection scan, tipping-off rail, security events
+├── redteam.py        # forged tool calls through OPA (security demo)
 ├── repo/             # data access: JSON datasets or Postgres, same interface
 ├── kb.py             # policy knowledge base: chunking, embeddings, hybrid search
 ├── graphdb.py        # customer network: Neo4j (+GDS) or in-memory, mule scores
 ├── datagen/          # seeded synthetic data generator, Postgres schema and loader
 ├── guards/           # citation and completeness checks
-├── hitl.py           # human-review interrupt and decision validation
+├── hitl.py           # approval and human-review interrupts, validation
 ├── schemas/          # Pydantic outputs and decision reason codes
 ├── prompts/          # versioned system prompts
 ├── events.py         # Kafka message schemas (alerts, decisions, case events)
 ├── kafka.py          # Kafka clients (local or MSK IAM), topics
-├── workers.py        # alert and decision workers
+├── workers.py        # alert, decision/approval and follow-up workers
 ├── persistence.py    # Postgres checkpointer and case status
 ├── evaluate.py       # batch evaluation against ground truth
-└── cli.py            # `sentinel run | data | eval | kafka | worker`
+└── cli.py            # `sentinel run | data | eval | kafka | worker | redteam`
 mcp_servers/          # FastMCP servers (case_mgmt, kyc_profile, txn_history, screening) + Dockerfile
 guardrails/opa/       # Rego policy, agent tool allow-list, policy tests
 docker-compose.yml    # local stack: Postgres, Kafka + UI, OPA, MCP servers
