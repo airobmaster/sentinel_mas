@@ -39,10 +39,10 @@ async def typology(state: CaseState) -> dict:
     policy = [{**e, "agent": "typology"} for e in policy]
     brief = (brief_for("typology", state) + "\n\nRelevant policy sections (already retrieved for you; cite these "
              f"IDs, and search for more if needed):\n{content}")
-    assessment, messages = await run_specialist(spec, brief, state["legal_entity"],
-                                                extra_ids=[e["id"] for e in policy])
+    assessment, messages, run = await run_specialist(spec, brief, state, extra_ids=[e["id"] for e in policy])
     return {
         "evidence": policy + tool_evidence(messages, "typology"),
         "findings": {"typology": assessment.model_dump()},
         "versions": {"typology": spec.versions},
+        **run.update(),
     }

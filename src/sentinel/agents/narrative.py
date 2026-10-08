@@ -12,5 +12,5 @@ from sentinel.state import CaseState
 
 async def narrative(state: CaseState) -> dict:
     spec = get_specialist("narrative", settings.model_narrative, "narrative", NarrativeDraft)
-    draft, _ = await run_specialist(spec, brief_for("narrative", state), state["legal_entity"])
-    return {"narrative": draft.model_dump(), "versions": {"narrative": spec.versions}}
+    draft, _, run = await run_specialist(spec, brief_for("narrative", state), state)
+    return {"narrative": draft.model_dump(), "versions": {"narrative": spec.versions}, **run.update()}

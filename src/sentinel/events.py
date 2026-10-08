@@ -9,7 +9,8 @@ ALERTS_TOPIC = "aml.alerts.v1"
 DECISIONS_TOPIC = "aml.decisions.v1"
 CASE_EVENTS_TOPIC = "aml.case-events.v1"
 DLQ_TOPIC = "aml.alerts.dlq.v1"
-TOPICS = (ALERTS_TOPIC, DECISIONS_TOPIC, CASE_EVENTS_TOPIC, DLQ_TOPIC)
+FOLLOWUPS_TOPIC = "aml.case-followups.v1"  # UC-04: customer replies that start a follow-up run
+TOPICS = (ALERTS_TOPIC, DECISIONS_TOPIC, CASE_EVENTS_TOPIC, DLQ_TOPIC, FOLLOWUPS_TOPIC)
 
 
 def now() -> str:
@@ -42,6 +43,7 @@ class DecisionEvent(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    kind: Literal["decision"] = "decision"
     case_id: str
     action: Literal["close", "escalate", "request_info"]
     reason_code: str
@@ -51,9 +53,41 @@ class DecisionEvent(BaseModel):
     decided_at: str = Field(default_factory=now)
 
 
+class ApprovalEvent(BaseModel):
+    """UC-03: approve, edit or reject a drafted customer information request (decisions topic)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["approval"] = "approval"
+    case_id: str
+    action: Literal["approve", "edit", "reject"]
+    approver_id: str
+    message: str | None = None
+    questions: list[str] | None = None
+    decided_at: str = Field(default_factory=now)
+
+
+class FollowUpEvent(BaseModel):
+    """UC-04: the customer's reply to a request for information (key: case_id)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    case_id: str
+    reply_text: str = Field(min_length=1, max_length=5000)
+    received_at: str = Field(default_factory=now)
+
+
+def parse_resume(raw: str) -> DecisionEvent | ApprovalEvent:
+    """Messages on the decisions topic are dispositions or approvals."""
+    import json
+
+    return (ApprovalEvent if json.loads(raw).get("kind") == "approval" else DecisionEvent).model_validate_json(raw)
+
+
 CaseEventType = Literal[
-    "case_started", "node_completed", "awaiting_review", "decision_applied",
-    "duplicate_ignored", "decision_ignored", "error",
+    "case_started", "node_completed", "awaiting_approval", "approval_applied", "awaiting_review",
+    "decision_applied", "follow_up_started", "duplicate_ignored", "decision_ignored", "follow_up_ignored",
+    "security_event", "error",
 ]
 
 

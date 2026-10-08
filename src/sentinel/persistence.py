@@ -21,22 +21,36 @@ CONNECTION_KWARGS = {"autocommit": True, "prepare_threshold": 0, "row_factory": 
 
 # Case status values in cases.alerts.status
 STATUS_AFTER_DECISION = {"close": "closed", "escalate": "escalated", "request_info": "info_requested"}
-OPEN_STATUSES = ("new", "in_progress", "awaiting_review")
+OPEN_STATUSES = ("new", "in_progress", "awaiting_approval", "awaiting_review")
 
 
 class CaseStore:
     def __init__(self, pool: AsyncConnectionPool):
         self.pool = pool
 
-    async def start(self, alert: dict) -> None:
-        """Record a case as in progress (inserting it if the alert arrived only via Kafka)."""
+    async def start(self, alert: dict, thread_id: str | None = None) -> None:
+        """Record a case as in progress on a run thread (inserting it if the alert arrived only via Kafka)."""
+        thread_id = thread_id or alert["case_id"]
         async with self.pool.connection() as conn:
             await conn.execute(
-                """INSERT INTO cases.alerts (case_id, legal_entity, customer_id, alert, status)
-                   VALUES (%s, %s, %s, %s, 'in_progress')
-                   ON CONFLICT (case_id) DO UPDATE SET status = 'in_progress', updated_at = now()""",
-                (alert["case_id"], alert["legal_entity"], alert["customer_id"], Jsonb(alert)),
+                """INSERT INTO cases.alerts (case_id, legal_entity, customer_id, alert, status, thread_id)
+                   VALUES (%s, %s, %s, %s, 'in_progress', %s)
+                   ON CONFLICT (case_id) DO UPDATE SET status = 'in_progress', thread_id = %s, updated_at = now()""",
+                (alert["case_id"], alert["legal_entity"], alert["customer_id"], Jsonb(alert), thread_id, thread_id),
             )
+
+    async def thread_for(self, case_id: str) -> str:
+        """The case's current run thread (follow-up runs use case_id:rN)."""
+        async with self.pool.connection() as conn:
+            row = await (await conn.execute("SELECT thread_id FROM cases.alerts WHERE case_id = %s",
+                                            (case_id,))).fetchone()
+        return (row or {}).get("thread_id") or case_id
+
+    async def save_reply(self, case_id: str, round_no: int, reply_text: str, received_at: str) -> None:
+        async with self.pool.connection() as conn:
+            await conn.execute(
+                "INSERT INTO cases.customer_replies (case_id, round, reply_text, received_at) VALUES (%s, %s, %s, %s) "
+                "ON CONFLICT (case_id, round) DO NOTHING", (case_id, round_no, reply_text, received_at))
 
     async def set_status(self, case_id: str, status: str) -> None:
         async with self.pool.connection() as conn:
@@ -89,9 +103,20 @@ def case_status(case_id: str) -> str | None:
     return row["status"] if row else None
 
 
+def case_thread(case_id: str) -> str:
+    with psycopg.connect(settings.pg_dsn, **CONNECTION_KWARGS) as conn:
+        row = conn.execute("SELECT thread_id FROM cases.alerts WHERE case_id = %s", (case_id,)).fetchone()
+    return (row or {}).get("thread_id") or case_id
+
+
 def reset_case(case_id: str) -> None:
-    """Dev/test only: forget a case's run so the same alert can be investigated again."""
+    """Dev/test only: forget a case's runs (including follow-ups) so the alert can be investigated again."""
     with sync_checkpointer() as saver:
-        saver.delete_thread(case_id)
-        saver.conn.execute("UPDATE cases.alerts SET status = 'new', updated_at = now() WHERE case_id = %s",
-                           (case_id,))
+        threads = saver.conn.execute(
+            "SELECT DISTINCT thread_id FROM checkpoints WHERE thread_id = %s OR thread_id LIKE %s",
+            (case_id, f"{case_id}:r%")).fetchall()
+        for row in threads:
+            saver.delete_thread(row["thread_id"])
+        saver.conn.execute("DELETE FROM cases.customer_replies WHERE case_id = %s", (case_id,))
+        saver.conn.execute("UPDATE cases.alerts SET status = 'new', thread_id = NULL, updated_at = now() "
+                           "WHERE case_id = %s", (case_id,))

@@ -100,7 +100,16 @@ CREATE TABLE cases.alerts (
     alert        jsonb NOT NULL,
     expected     jsonb,                                  -- ground truth for evaluation; never shown to agents
     status       text NOT NULL DEFAULT 'new',
+    thread_id    text,                                   -- current run: case_id, or case_id:rN after a follow-up
     updated_at   timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE cases.customer_replies (                   -- UC-04
+    case_id     text NOT NULL REFERENCES cases.alerts,
+    round       int NOT NULL,
+    reply_text  text NOT NULL,
+    received_at timestamptz NOT NULL,
+    PRIMARY KEY (case_id, round)
 );
 
 CREATE TABLE cases.history (

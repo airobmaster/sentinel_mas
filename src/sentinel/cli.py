@@ -76,6 +76,14 @@ def describe_update(node: str, out: dict | None) -> list[str]:
         return [f"[qa]        round {out['qa_rounds']}: {status} ({verdict})"] + [
             f"            - [{i['severity']}] {i['target_agent']}: {i['description']}" for i in issues
         ]
+    if node == "draft_info_request":
+        r = out["info_request"]
+        rail = "passed" if r["rail"]["passed"] else f"FAILED {r['rail']['violations']}"
+        return [f"[request]   customer info request drafted: {len(r['questions'])} question(s), "
+                f"tipping-off rail {rail} (attempt {r['rail']['attempts']})"]
+    if node == "approve_info_request":
+        r = out["info_request"]
+        return [f"[approval]  customer info request {r['status']} by {r['approver_id']}"]
     if node == "human_review":
         d = out["decision"]
         return [f"[decision]  {d['action']} ({d['reason_code']}) by {d['investigator_id']}"]
@@ -138,6 +146,19 @@ async def run(alert: dict, accept: bool) -> int:
                 show_update(node, out)
 
     snapshot = await graph.aget_state(config)
+    if snapshot.interrupts and snapshot.interrupts[0].value.get("kind") == "approval":
+        draft = snapshot.interrupts[0].value["draft"]
+        print(f"\n{RULE}\nCUSTOMER INFORMATION REQUEST (approval needed)\n{RULE}\n{draft['message']}")
+        for q in draft["questions"]:
+            print(f" - {q}")
+        print(f"Tipping-off rail: {'passed' if draft['rail']['passed'] else draft['rail']['violations']}")
+        answer = "approve" if accept else (input("approve / reject [approve]: ").strip() or "approve")
+        approval = {"action": answer, "approver_id": "INV-0001"}
+        async for update in graph.astream(Command(resume=approval), config, stream_mode="updates"):
+            for node, out in update.items():
+                if node != "__interrupt__":
+                    show_update(node, out)
+        snapshot = await graph.aget_state(config)
     if not snapshot.interrupts:
         print("Run ended without reaching human review.")
         return 1
@@ -214,7 +235,7 @@ async def kafka_decide(case_ids: list[str], action: str | None, reason_code: str
             for case_id in case_ids:
                 act, code = action, reason_code
                 if accept:
-                    snapshot = await graph.aget_state(run_config(case_id))
+                    snapshot = await graph.aget_state(run_config(await cases.thread_for(case_id)))
                     if not snapshot.interrupts:
                         print(f"skipped {case_id}: not waiting for review")
                         continue
@@ -226,6 +247,38 @@ async def kafka_decide(case_ids: list[str], action: str | None, reason_code: str
                 print(f"published decision {case_id}: {act} ({code})")
         finally:
             await prod.stop()
+
+
+async def kafka_approve(case_id: str, action: str, approver: str, message: str | None) -> None:
+    from sentinel import kafka
+    from sentinel.events import DECISIONS_TOPIC, ApprovalEvent
+
+    await kafka.publish(DECISIONS_TOPIC, [ApprovalEvent(case_id=case_id, action=action, approver_id=approver,
+                                                        message=message)])
+    print(f"published approval {case_id}: {action}")
+
+
+async def kafka_reply(case_id: str, text: str) -> None:
+    from sentinel import kafka
+    from sentinel.events import FOLLOWUPS_TOPIC, FollowUpEvent
+
+    await kafka.publish(FOLLOWUPS_TOPIC, [FollowUpEvent(case_id=case_id, reply_text=text)])
+    print(f"published customer reply for {case_id}")
+
+
+async def run_redteam(case_id: str) -> int:
+    from sentinel.redteam import probe
+
+    alert = data.get_alert(case_id) or {"legal_entity": "UK"}
+    rows = await probe(case_id, alert["legal_entity"])
+    print(f"\n{'agent':<10} {'tool':<17} {'result':<8} attempt / reason")
+    for r in rows:
+        print(f"{r['agent']:<10} {r['tool']:<17} {'DENIED' if r['denied'] else 'ALLOWED':<8} {r['attempt']}")
+        if r["reason"]:
+            print(f"{'':<37}{r['reason']}")
+    denied = sum(r["denied"] for r in rows)
+    print(f"\n{denied}/{len(rows)} forged tool calls denied by OPA and logged as security events")
+    return 0 if denied == len(rows) else 1
 
 
 async def kafka_tail(case_ids: set[str], from_beginning: bool) -> None:
@@ -297,9 +350,20 @@ def main() -> None:
     tail_p = kafka_sub.add_parser("tail", help="Print case events as they arrive")
     tail_p.add_argument("cases", nargs="*", help="Only these case IDs")
     tail_p.add_argument("--from-beginning", action="store_true")
+    appr_p = kafka_sub.add_parser("approve", help="Approve, edit or reject a customer information request")
+    appr_p.add_argument("case")
+    appr_p.add_argument("--action", choices=["approve", "edit", "reject"], default="approve")
+    appr_p.add_argument("--message", help="Edited message (with --action edit)")
+    appr_p.add_argument("--approver", default="INV-0001")
+    reply_p = kafka_sub.add_parser("reply", help="Simulate the customer's reply to a request for information")
+    reply_p.add_argument("case")
+    reply_p.add_argument("--text", required=True)
+
+    redteam_p = sub.add_parser("redteam", help="Red-team probe: forged forbidden tool calls must be denied by OPA and logged")
+    redteam_p.add_argument("--case", default="CASE-0001")
 
     worker_p = sub.add_parser("worker", help="Run Kafka workers (agents on Bedrock, state in Postgres)")
-    worker_p.add_argument("kind", choices=["alerts", "decisions", "all"], nargs="?", default="all")
+    worker_p.add_argument("kind", choices=["alerts", "decisions", "followups", "all"], nargs="?", default="all")
     worker_p.add_argument("--concurrency", type=int, default=4, help="Cases processed in parallel")
 
     args = parser.parse_args()
@@ -356,6 +420,14 @@ def main() -> None:
         if not args.accept and not (args.action and args.reason_code):
             parser.error("give --accept, or --action and --reason-code")
         asyncio.run(kafka_decide(args.cases, args.action, args.reason_code, args.investigator, args.accept))
+    elif args.command == "kafka" and args.kafka_command == "approve":
+        if args.action == "edit" and not args.message:
+            parser.error("--action edit needs --message")
+        asyncio.run(kafka_approve(args.case, args.action, args.approver, args.message))
+    elif args.command == "kafka" and args.kafka_command == "reply":
+        asyncio.run(kafka_reply(args.case, args.text))
+    elif args.command == "redteam":
+        sys.exit(asyncio.run(run_redteam(args.case)))
     elif args.command == "kafka" and args.kafka_command == "tail":
         try:
             asyncio.run(kafka_tail(set(args.cases), args.from_beginning))

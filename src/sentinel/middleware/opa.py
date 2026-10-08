@@ -10,6 +10,7 @@ from langchain.agents.middleware import wrap_tool_call
 from langchain_core.messages import ToolMessage
 
 from sentinel.config import settings
+from sentinel.guardrails.events import record
 
 log = logging.getLogger("sentinel.security")
 
@@ -56,7 +57,8 @@ def opa_authorize(agent: str):
             {"agent": agent, "tool": call["name"], "args": call["args"], "case": CASE_CONTEXT.get()}
         )
         if not allowed:
-            log.warning("tool_denied agent=%s tool=%s reasons=%s", agent, call["name"], reasons)
+            record("tool_denied", agent, f"{call['name']} denied: {'; '.join(reasons) or 'not allowed'}",
+                   tool=call["name"], reasons=reasons, args=call.get("args"))  # tokens only, no PII
             return ToolMessage(
                 content=f"Denied by policy: {'; '.join(reasons) or 'not allowed'}",
                 status="error",

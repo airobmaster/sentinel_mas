@@ -1,9 +1,12 @@
 """Kafka workers (TDD §13, §15).
 
 - Alert worker (group `sentinel-alerts`): starts a case once (idempotent on the checkpoint),
-  streams progress to `aml.case-events.v1`, and leaves the case paused at human review.
-- Decision worker (group `sentinel-decisions`): resumes a case only when it is waiting at
-  human review; stale or duplicate decisions are ignored.
+  streams progress to `aml.case-events.v1`, and leaves the case paused for a human: at the
+  approval of a customer information request (UC-03) or at the disposition.
+- Decision worker (group `sentinel-decisions`): resumes a case only when it is waiting at the
+  step the message is for (approval or disposition); stale or duplicate messages are ignored.
+- Follow-up worker (group `sentinel-followups`, UC-04): a customer reply to a request for
+  information starts a follow-up run on thread `{case_id}:rN` with the reply as evidence.
 Delivery is at-least-once: offsets are committed after processing, and the checkpoint makes
 replays safe. Messages for the same case in one batch are processed in order.
 """
@@ -18,10 +21,10 @@ from pydantic import ValidationError
 
 from sentinel.cli import describe_update
 from sentinel.config import settings
-from sentinel.events import (ALERTS_TOPIC, CASE_EVENTS_TOPIC, DECISIONS_TOPIC, DLQ_TOPIC, AlertEvent,
-                             CaseEvent, DecisionEvent)
-from sentinel.graph import initial_state, run_config
-from sentinel.hitl import validate_decision
+from sentinel.events import (ALERTS_TOPIC, CASE_EVENTS_TOPIC, DECISIONS_TOPIC, DLQ_TOPIC, FOLLOWUPS_TOPIC,
+                             AlertEvent, CaseEvent, FollowUpEvent, parse_resume)
+from sentinel.graph import follow_up_state, follow_up_thread, initial_state, run_config
+from sentinel.hitl import WAITING_NODE, validate_approval, validate_decision
 from sentinel.persistence import STATUS_AFTER_DECISION
 
 log = logging.getLogger("sentinel.worker")
@@ -32,9 +35,35 @@ Publish = Callable[[CaseEvent], Awaitable[None]]
 async def stream(graph, payload, config: dict, case_id: str, publish: Publish) -> None:
     async for update in graph.astream(payload, config, stream_mode="updates"):
         for node, out in update.items():
-            if node != "__interrupt__":
-                detail = "; ".join(line.split("]", 1)[-1].strip() for line in describe_update(node, out))
-                await publish(CaseEvent(case_id=case_id, type="node_completed", node=node, detail=detail or None))
+            if node == "__interrupt__":
+                continue
+            detail = "; ".join(line.split("]", 1)[-1].strip() for line in describe_update(node, out))
+            await publish(CaseEvent(case_id=case_id, type="node_completed", node=node, detail=detail or None))
+            for event in (out or {}).get("security_events", []):  # each update carries only its new events
+                await publish(CaseEvent(case_id=case_id, type="security_event", node=node,
+                                        detail=f"{event['kind']}: {event['detail']}", data=event.get("data")))
+
+
+async def report_pause(graph, config: dict, case_id: str, publish: Publish, cases) -> str:
+    """After a run or resume: record where the case is waiting (approval or disposition)."""
+    snapshot = await graph.aget_state(config)
+    if snapshot.next == ("approve_info_request",):
+        draft = snapshot.interrupts[0].value["draft"]
+        await cases.set_status(case_id, "awaiting_approval")
+        await publish(CaseEvent(case_id=case_id, type="awaiting_approval",
+                                data={"questions": len(draft["questions"]), "rail_passed": draft["rail"]["passed"]}))
+        return "awaiting_approval"
+    if snapshot.next == ("human_review",):
+        packet = snapshot.interrupts[0].value
+        await cases.set_status(case_id, "awaiting_review")
+        await publish(CaseEvent(
+            case_id=case_id, type="awaiting_review",
+            data={"recommendation": packet["recommendation"], "reason_code": packet["reason_code"],
+                  "tier": packet["tier"], "qa_issues": len(packet["qa_issues"]),
+                  "security_events": len(packet.get("security_events") or [])},
+        ))
+        return "awaiting_review"
+    raise RuntimeError(f"run for {case_id} stopped at {snapshot.next} instead of a human step")
 
 
 async def handle_alert(graph, raw: str, publish: Publish, cases) -> str:
@@ -47,41 +76,59 @@ async def handle_alert(graph, raw: str, publish: Publish, cases) -> str:
     await cases.start(alert)
     await publish(CaseEvent(case_id=case_id, type="case_started", data={"scenario": alert["scenario_code"]}))
     await stream(graph, initial_state(alert), config, case_id, publish)
-    snapshot = await graph.aget_state(config)
-    if snapshot.next != ("human_review",):
-        raise RuntimeError(f"run for {case_id} stopped at {snapshot.next} instead of human review")
-    packet = snapshot.interrupts[0].value
-    await cases.set_status(case_id, "awaiting_review")
-    await publish(CaseEvent(
-        case_id=case_id, type="awaiting_review",
-        data={"recommendation": packet["recommendation"], "reason_code": packet["reason_code"],
-              "tier": packet["tier"], "qa_issues": len(packet["qa_issues"])},
-    ))
-    return "awaiting_review"
+    return await report_pause(graph, config, case_id, publish, cases)
 
 
 async def handle_decision(graph, raw: str, publish: Publish, cases) -> str:
-    """Process one decision message; returns the resulting case status (or 'ignored')."""
-    decision = DecisionEvent.model_validate_json(raw).model_dump(exclude_none=True)
-    case_id = decision.pop("case_id")
-    config = run_config(case_id)
+    """Process one disposition or approval; returns the resulting case status (or 'ignored')."""
+    message = parse_resume(raw).model_dump(exclude_none=True)
+    kind, case_id = message.pop("kind"), message.pop("case_id")
+    config = run_config(await cases.thread_for(case_id))
     snapshot = await graph.aget_state(config)
-    if snapshot.next != ("human_review",):
-        reason = "case is not waiting for review" if snapshot.values else "unknown case"
+    if snapshot.next != (WAITING_NODE[kind],):
+        reason = (f"case is not waiting for {'approval' if kind == 'approval' else 'review'}"
+                  if snapshot.values else "unknown case")
         await publish(CaseEvent(case_id=case_id, type="decision_ignored", detail=reason))
         return "ignored"
     try:
-        validate_decision(decision)
+        (validate_approval if kind == "approval" else validate_decision)(message)
     except ValueError as e:
-        await publish(CaseEvent(case_id=case_id, type="decision_ignored", detail=f"invalid decision: {e}"))
+        await publish(CaseEvent(case_id=case_id, type="decision_ignored", detail=f"invalid {kind}: {e}"))
         return "ignored"
-    await stream(graph, Command(resume=decision), config, case_id, publish)
-    status = STATUS_AFTER_DECISION[decision["action"]]
+    await stream(graph, Command(resume=message), config, case_id, publish)
+    if kind == "approval":
+        await publish(CaseEvent(case_id=case_id, type="approval_applied",
+                                data={"action": message["action"], "approver_id": message["approver_id"]}))
+        return await report_pause(graph, config, case_id, publish, cases)
+    status = STATUS_AFTER_DECISION[message["action"]]
     await cases.set_status(case_id, status)
     await publish(CaseEvent(case_id=case_id, type="decision_applied",
-                            data={"action": decision["action"], "reason_code": decision["reason_code"],
-                                  "investigator_id": decision["investigator_id"]}))
+                            data={"action": message["action"], "reason_code": message["reason_code"],
+                                  "investigator_id": message["investigator_id"]}))
     return status
+
+
+async def handle_followup(graph, raw: str, publish: Publish, cases) -> str:
+    """UC-04: start a follow-up run when a case that requested information gets the customer's reply."""
+    reply = FollowUpEvent.model_validate_json(raw)
+    case_id = reply.case_id
+    prior_thread = await cases.thread_for(case_id)
+    prior = (await graph.aget_state(run_config(prior_thread))).values
+    if not prior or (prior.get("decision") or {}).get("action") != "request_info":
+        await publish(CaseEvent(case_id=case_id, type="follow_up_ignored",
+                                detail="case is not waiting for a customer reply"))
+        return "ignored"
+    state = follow_up_state(prior, prior_thread, reply.reply_text, reply.received_at)
+    thread = follow_up_thread(case_id, state)
+    config = run_config(thread)
+    if (await graph.aget_state(config)).values:
+        await publish(CaseEvent(case_id=case_id, type="duplicate_ignored", detail=f"{thread} already started"))
+        return "duplicate"
+    await cases.save_reply(case_id, state["follow_up"]["round"], reply.reply_text, reply.received_at)
+    await cases.start(state["alert"], thread)
+    await publish(CaseEvent(case_id=case_id, type="follow_up_started", data={"thread": thread}))
+    await stream(graph, state, config, case_id, publish)
+    return await report_pause(graph, config, case_id, publish, cases)
 
 
 def by_case(messages: list) -> list[list]:
@@ -117,7 +164,8 @@ async def run_worker(graph, cases, handlers: dict, concurrency: int, stop: async
     """Consume the topics in `handlers` ({topic: handler}) until `stop` is set."""
     from sentinel import kafka
 
-    groups = {ALERTS_TOPIC: "sentinel-alerts", DECISIONS_TOPIC: "sentinel-decisions"}
+    groups = {ALERTS_TOPIC: "sentinel-alerts", DECISIONS_TOPIC: "sentinel-decisions",
+              FOLLOWUPS_TOPIC: "sentinel-followups"}
     prod = kafka.producer()
     consumers = {t: kafka.consumer(t, group_id=groups[t]) for t in handlers}
     await prod.start()
@@ -155,5 +203,9 @@ async def run_worker(graph, cases, handlers: dict, concurrency: int, stop: async
         await prod.stop()
 
 
-HANDLERS = {"alerts": {ALERTS_TOPIC: handle_alert}, "decisions": {DECISIONS_TOPIC: handle_decision},
-            "all": {ALERTS_TOPIC: handle_alert, DECISIONS_TOPIC: handle_decision}}
+HANDLERS = {
+    "alerts": {ALERTS_TOPIC: handle_alert},
+    "decisions": {DECISIONS_TOPIC: handle_decision},
+    "followups": {FOLLOWUPS_TOPIC: handle_followup},
+    "all": {ALERTS_TOPIC: handle_alert, DECISIONS_TOPIC: handle_decision, FOLLOWUPS_TOPIC: handle_followup},
+}

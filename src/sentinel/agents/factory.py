@@ -7,18 +7,25 @@ We do not use `response_format=ToolStrategy(...)`: it forces tool_choice="any" o
 DeepSeek on Bedrock then re-calls the data tools forever instead of the output tool.
 
 Tools come from tools/registry.py: in-process (agent built once) or MCP (agent built per run on
-sessions that stay open for the run). When settings.opa_url is set, every tool call is
-authorised by OPA first. PII, rails and budget middleware are added in later slices.
+sessions that stay open for the run). Guardrails wrap every run (middleware/guards.py, opa.py):
+PII redaction with reversible tokens, OPA authorisation, the injection rail and call budgets.
 """
 
+import time
 from dataclasses import dataclass, field
 
 from langchain.agents import create_agent
+from langchain.agents.middleware import ModelCallLimitMiddleware, ToolCallLimitMiddleware
 from langchain_aws import ChatBedrockConverse
-from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.callbacks import get_usage_metadata_callback
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from pydantic import BaseModel
 
+from sentinel import data
 from sentinel.config import settings
+from sentinel.guardrails.events import SECURITY_EVENTS, record
+from sentinel.guardrails.pii import PII_VAULT, TOKEN_NOTE, PiiVault
+from sentinel.middleware.guards import injection_rail, pii_redaction, pii_restore, redact_messages
 from sentinel.middleware.opa import CASE_CONTEXT, opa_authorize
 from sentinel.prompts import load_prompt
 from sentinel.tools.registry import AGENT_TOOLS, tools_for
@@ -40,8 +47,25 @@ class Specialist:
 
     def build_agent(self, tools: list):
         middleware = [opa_authorize(self.name)] if settings.opa_url else []
+        middleware += [
+            pii_restore(self.name), injection_rail(self.name), pii_redaction(self.name),
+            ModelCallLimitMiddleware(run_limit=settings.max_model_calls_per_agent, exit_behavior="end"),
+            ToolCallLimitMiddleware(run_limit=settings.max_tool_calls_per_agent, exit_behavior="end"),
+        ]
         return create_agent(model=self.model, tools=tools, system_prompt=self.prompt,
                             middleware=middleware, name=self.name)
+
+
+@dataclass
+class RunRecord:
+    """What a specialist run adds to case state besides its findings."""
+
+    security_events: list
+    usage: dict
+    pii_vault: dict
+
+    def update(self) -> dict:
+        return {"security_events": self.security_events, "usage": self.usage, "pii_vault": self.pii_vault}
 
 
 _specialists: dict[str, Specialist] = {}
@@ -69,23 +93,47 @@ async def run_tool_loop(spec: Specialist, messages: list[BaseMessage]) -> list[B
         return (await spec.build_agent(tools).ainvoke({"messages": messages}, config=config))["messages"]
 
 
-async def run_specialist(spec: Specialist, brief: str, legal_entity: str,
-                         extra_ids: list[str] | None = None) -> tuple[BaseModel, list[BaseMessage]]:
-    """Return (structured output, conversation messages). `extra_ids`: evidence IDs given in the brief
-    that the output may cite in addition to what the tools return."""
-    CASE_CONTEXT.set({"legal_entity": legal_entity})  # read by the OPA middleware in this task only
-    messages: list[BaseMessage] = [HumanMessage(brief)]
+def case_vault(state: dict) -> PiiVault:
+    customer = data.get_customer(state["alert"]["customer_id"])
+    return PiiVault(customer, state.get("pii_vault"))
+
+
+async def run_specialist(spec: Specialist, brief: str, state: dict,
+                         extra_ids: list[str] | None = None) -> tuple[BaseModel, list[BaseMessage], RunRecord]:
+    """Return (structured output, conversation messages, run record). `extra_ids`: evidence IDs given
+    in the brief that the output may cite in addition to what the tools return. The output keeps PII
+    tokens; the console restores them for investigators from state["pii_vault"]."""
+    CASE_CONTEXT.set({"legal_entity": state["legal_entity"]})  # read by the OPA middleware in this task
+    vault = case_vault(state)
+    PII_VAULT.set(vault)
+    events: list = []
+    SECURITY_EVENTS.set(events)
+    messages: list[BaseMessage] = [HumanMessage(brief + (TOKEN_NOTE if settings.pii_redaction else ""))]
     finalise = FINALISE
     ids = list(extra_ids or [])
-    if AGENT_TOOLS.get(spec.name):
-        messages = await run_tool_loop(spec, messages)
-        ids += [e["id"] for e in tool_evidence(messages, spec.name)]
-    if ids:
-        # Anchor the structured output to real IDs: in a long conversation models otherwise
-        # "reconstruct" plausible-looking IDs from memory.
-        finalise += f"\nEvidence IDs from the brief and your tool calls (copy them exactly): {', '.join(dict.fromkeys(ids))}"
-    result = await spec.extractor.ainvoke([SystemMessage(spec.prompt), *messages, HumanMessage(finalise)])
-    return result, messages
+    start = time.perf_counter()
+    with get_usage_metadata_callback() as usage_cb:
+        if AGENT_TOOLS.get(spec.name):
+            messages = await run_tool_loop(spec, messages)
+            ids += [e["id"] for e in tool_evidence(messages, spec.name)]
+        if ids:
+            # Anchor the structured output to real IDs: in a long conversation models otherwise
+            # "reconstruct" plausible-looking IDs from memory.
+            finalise += ("\nEvidence IDs from the brief and your tool calls (copy them exactly): "
+                         f"{', '.join(dict.fromkeys(ids))}")
+        prompt = redact_messages([SystemMessage(spec.prompt), *messages, HumanMessage(finalise)])
+        result = await spec.extractor.ainvoke(prompt)
+    tool_calls = sum(isinstance(m, ToolMessage) for m in messages)
+    model_calls = sum(isinstance(m, AIMessage) for m in messages) + 1
+    if tool_calls >= settings.max_tool_calls_per_agent or model_calls > settings.max_model_calls_per_agent:
+        record("budget_limit", spec.name, f"call limit reached ({tool_calls} tool / {model_calls} model calls)")
+    usage = {spec.name: {
+        "input_tokens": sum(u.get("input_tokens", 0) for u in usage_cb.usage_metadata.values()),
+        "output_tokens": sum(u.get("output_tokens", 0) for u in usage_cb.usage_metadata.values()),
+        "model_calls": model_calls, "tool_calls": tool_calls,
+        "seconds": round(time.perf_counter() - start, 1),
+    }}
+    return result, messages, RunRecord(events, usage, vault.mapping)
 
 
 def artifact_evidence(artifact) -> list[dict]:

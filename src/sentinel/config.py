@@ -73,9 +73,19 @@ class Settings(BaseSettings):
     cash_reporting_threshold: float = 10_000  # structuring detector threshold
     name_match_threshold: float = 85  # sanctions/PEP fuzzy match score (0-100)
 
-    # Budgets
+    # Budgets (FR-125)
     graph_recursion_limit: int = 40  # outer graph super-steps (TDD §5.4)
-    agent_recursion_limit: int = 25  # bounds each specialist's inner tool loop
+    # Backstop only: the call limits below end a run gracefully; each model call costs several graph steps
+    agent_recursion_limit: int = 60
+    max_tool_calls_per_agent: int = 12  # per specialist run
+    max_model_calls_per_agent: int = 14  # per specialist run
+    case_token_budget: int = 400_000  # input + output tokens across all agents; over budget -> human
+
+    # Guardrails (FR-122/123)
+    pii_redaction: bool = True  # models see reversible tokens instead of PII
+    presidio_url: str | None = "http://localhost:5002"  # Presidio analyzer service (en_core_web_lg)
+    pii_score_threshold: float = 0.7
+    pii_token_key: str = "dev-only-pii-token-key"  # HMAC key so tokens cannot be reversed by guessing
 
 
 settings = Settings()

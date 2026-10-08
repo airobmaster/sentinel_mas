@@ -9,9 +9,10 @@ from sentinel.state import CaseState
 
 async def kyc(state: CaseState) -> dict:
     spec = get_specialist("kyc", settings.model_kyc, "kyc", KycFindings)
-    findings, messages = await run_specialist(spec, brief_for("kyc", state), state["legal_entity"])
+    findings, messages, run = await run_specialist(spec, brief_for("kyc", state), state)
     return {
         "evidence": tool_evidence(messages, "kyc"),
         "findings": {"kyc": findings.model_dump()},
         "versions": {"kyc": spec.versions},
+        **run.update(),
     }
