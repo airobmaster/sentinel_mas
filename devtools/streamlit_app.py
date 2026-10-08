@@ -12,9 +12,12 @@ or from the repo root:
 """
 
 import asyncio
+import html
 import json
+import queue
 import socket
 import sys
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -26,13 +29,33 @@ from langgraph.types import Command
 from sentinel import data, kafka
 from sentinel.cli import describe_update
 from sentinel.config import REPO_ROOT, settings
-from sentinel.events import (ALERTS_TOPIC, DECISIONS_TOPIC, FOLLOWUPS_TOPIC, AlertEvent, ApprovalEvent,
-                             DecisionEvent, FollowUpEvent)
-from sentinel.graph import build_graph, compile_graph, follow_up_state, initial_state, run_config
+from sentinel.events import (
+    ALERTS_TOPIC,
+    DECISIONS_TOPIC,
+    FOLLOWUPS_TOPIC,
+    AlertEvent,
+    ApprovalEvent,
+    DecisionEvent,
+    FollowUpEvent,
+)
+from sentinel.graph import (
+    build_graph,
+    compile_graph,
+    follow_up_state,
+    initial_state,
+    run_config,
+)
 from sentinel.guardrails.pii import PiiVault
 from sentinel.hitl import validate_approval, validate_decision
-from sentinel.persistence import (OPEN_STATUSES, STATUS_AFTER_DECISION, case_status, case_thread, list_cases,
-                                  reset_case, sync_checkpointer)
+from sentinel.persistence import (
+    OPEN_STATUSES,
+    STATUS_AFTER_DECISION,
+    case_status,
+    case_thread,
+    list_cases,
+    reset_case,
+    sync_checkpointer,
+)
 from sentinel.schemas import REASON_CODES
 
 if sys.platform == "win32":  # psycopg's async driver cannot use the default Proactor loop on Windows
@@ -87,11 +110,31 @@ html, body, .stApp, .stMarkdown, p, li, label, input, textarea, button, h1, h2, 
 .sn-pill.escalated { background: #FDE7E7; color: #B42318; }
 .sn-pill.info_requested { background: #F1E8FF; color: #6B3FA0; }
 .sn-pill.error { background: #2D3748; color: #fff; }
-[data-testid="stMetric"] { background: #F7F9FC; border: 1px solid #E3E8EF; border-radius: 12px; padding: 12px 16px; }
-[data-testid="stMetricValue"] { font-size: 22px; font-weight: 700; color: #0B2545; }
+[data-testid="stMetric"] { background: #F7F9FC; border: 1px solid #E3E8EF; border-radius: 10px; padding: 9px 14px; }
+[data-testid="stMetricValue"] { font-size: 15px; font-weight: 600; color: #0B2545; }
+[data-testid="stMetricLabel"] p { font-size: 12px; color: #5A6B7F; }
+.sn-issues { width: 100%; border-collapse: collapse; font-size: 13.5px; margin: 4px 0 12px; }
+.sn-issues th { text-align: left; background: #F1F4F8; color: #3D4F66; font-weight: 600; padding: 7px 10px;
+    border-bottom: 1px solid #DCE3EB; }
+.sn-issues td { padding: 7px 10px; border-bottom: 1px solid #EDF1F5; vertical-align: top; color: #1F2D3D; }
+.sn-sev { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 600;
+    white-space: nowrap; }
+.sn-sev.blocker { background: #FDE7E7; color: #B42318; }
+.sn-sev.major { background: #FFF1DB; color: #9A4A00; }
+.sn-sev.minor { background: #EEF1F5; color: #4A5568; }
+/* Never truncate metric labels or values with an ellipsis: wrap whole words instead */
+[data-testid="stMetricValue"], [data-testid="stMetricValue"] *, [data-testid="stMetricLabel"],
+[data-testid="stMetricLabel"] * { white-space: normal !important; overflow: visible !important;
+    text-overflow: clip !important; overflow-wrap: break-word; line-height: 1.3; }
 .stTabs [data-baseweb="tab"] { font-weight: 600; font-size: 15px; }
 [data-testid="stSidebar"] { border-right: 1px solid #E3E8EF; }
 [data-testid="stAppDeployButton"] { display: none; }
+.sn-running { display: flex; align-items: center; gap: 12px; padding: 10px 14px; margin: 4px 0 8px;
+    background: #EEF5FF; border: 1px solid #CFE0F7; border-radius: 10px; color: #0B2545; font-size: 14px; }
+.sn-spin { width: 18px; height: 18px; border-radius: 50%; border: 3px solid #CFE0F7; border-top-color: #0F4C81;
+    animation: sn-rotate .8s linear infinite; flex: none; }
+@keyframes sn-rotate { to { transform: rotate(360deg); } }
+.sn-clock { font-variant-numeric: tabular-nums; font-weight: 700; }
 .sn-footer { color: #8592A3; font-size: 12px; text-align: center; margin-top: 32px; padding-top: 12px;
     border-top: 1px solid #E9EDF2; }
 </style>
@@ -100,6 +143,42 @@ html, body, .stApp, .stMarkdown, p, li, label, input, textarea, button, h1, h2, 
 
 def now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def duration(seconds: float | None) -> str:
+    if seconds is None:
+        return "-"
+    minutes, secs = divmod(round(seconds), 60)
+    return f"{minutes}m {secs:02d}s" if minutes else f"{secs}s"
+
+
+def running_banner(seconds: float, detail: str) -> str:
+    """Spinner + elapsed time; the spinner is CSS, so it keeps turning between page updates."""
+    return (f'<div class="sn-running"><div class="sn-spin"></div><span class="sn-clock">{duration(seconds)}</span>'
+            f'<span>{detail}</span></div>')
+
+
+START_EVENTS = ("case_started", "follow_up_started")
+PAUSE_EVENTS = ("awaiting_approval", "awaiting_review")
+AGENT_LABELS = {"kyc": "KYC", "txn": "Transactions", "screening": "Screening", "network": "Network",
+                "typology": "Typology", "narrative": "Narrative", "qa": "QA critic",
+                "customer_request": "Customer request"}
+
+
+def seconds_between(start: str, end: str) -> float:
+    return (datetime.fromisoformat(end) - datetime.fromisoformat(start)).total_seconds()
+
+
+def latest_start(events: list[dict]) -> dict | None:
+    return next((e for e in reversed(events) if e["type"] in START_EVENTS), None)
+
+
+def investigation_seconds(events: list[dict]) -> float | None:
+    """Wall-clock time of the latest run (or follow-up run): from its start to the first pause after it."""
+    if not (start := latest_start(events)):
+        return None
+    pause = next((e for e in events if e["type"] in PAUSE_EVENTS and e["at"] >= start["at"]), None)
+    return seconds_between(start["at"], pause["at"]) if pause else None
 
 
 def pill(status: str | None) -> str:
@@ -231,10 +310,7 @@ def render_security(values: dict, case_id: str, legal_entity: str) -> None:
                                     "detail": e["detail"]} for e in events]), width="stretch", hide_index=True)
     else:
         st.caption("No security events for this case.")
-    if usage:
-        st.markdown("**Model and tool usage by agent**")
-        st.dataframe(pd.DataFrame([{"agent": a, **u} for a, u in usage.items()]), width="stretch", hide_index=True)
-    st.markdown("**Red-team probe (UC-08)**")
+    st.markdown("**Red-team probe**")
     st.caption("Sends forged calls to forbidden tools (close_alert, file_sar, …) through the same OPA check "
                "the agents use. Every one must be denied and logged.")
     if st.button("Run red-team probe", key=f"probe-{case_id}"):
@@ -250,6 +326,20 @@ def render_security(values: dict, case_id: str, legal_entity: str) -> None:
         st.dataframe(pd.DataFrame([{"agent": r["agent"], "tool": r["tool"], "result": "DENIED" if r["denied"] else
                                     "ALLOWED", "attempt": r["attempt"], "reason": r["reason"]} for r in rows]),
                      width="stretch", hide_index=True)
+
+
+def issues_table(issues: list[dict]) -> str:
+    """QA issues as a wrapped HTML table (a dataframe would cut the long descriptions off)."""
+    rows = []
+    for i in issues:
+        text = i["description"]
+        source = "QA critic" if text.startswith("[critic]") else "Code check"
+        text = text.removeprefix("[critic]").strip()
+        agent = AGENT_LABELS.get(i.get("target_agent"), i.get("target_agent") or "-")
+        rows.append(f'<tr><td><span class="sn-sev {i["severity"]}">{i["severity"]}</span></td><td>{source}</td>'
+                    f"<td>{agent}</td><td>{html.escape(text)}</td></tr>")
+    return ('<table class="sn-issues"><tr><th style="width:90px">Severity</th><th style="width:105px">Found by</th>'
+            '<th style="width:120px">Sent to</th><th>Issue</th></tr>' + "".join(rows) + "</table>")
 
 
 def for_display(values: dict) -> dict:
@@ -274,14 +364,21 @@ def render_case(alert: dict, status: str | None, values: dict, packet: dict | No
     critic = findings.get("qa")
     evidence = {e["id"]: e for e in values.get("evidence", [])}
     case_heading(alert["case_id"], alert.get("scenario_name", ""), status)
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
-    c1.metric("Lane", values.get("tier", "-"))
-    c2.metric("Recommendation", typology.get("recommendation") or narrative.get("recommendation", "-"))
-    c3.metric("Reason code", typology.get("reason_code") or narrative.get("reason_code", "-"))
+    # Outcome first (wide cards for long codes), then the run statistics
+    c1, c2, c3 = st.columns([1, 2, 1.2])  # reason code gets the room: the longest is FP_KNOWN_BUSINESS_PATTERN
+    c1.metric("Recommendation", typology.get("recommendation") or narrative.get("recommendation", "-"))
+    c2.metric("Reason code", typology.get("reason_code") or narrative.get("reason_code", "-"))
+    rounds = values.get("qa_rounds", 0)
+    c3.metric("QA", ("✓ passed" if critic["passed"] else "✗ issues raised") if critic else "code checks",
+              help=f"{rounds} QA round(s); the critic's findings are listed in the Review tab")
+    c4, c5, c6, c7, c8 = st.columns(5)
     c4.metric("Risk score", typology.get("risk_score", "-"))
-    c5.metric("QA", (f"{'✓' if critic['passed'] else '✗'} critic" if critic else "checks")
-              + f" · {values.get('qa_rounds', 0)} rd")
+    c5.metric("Lane", values.get("tier", "-"))
     c6.metric("Evidence items", len(evidence))
+    c7.metric("Investigation time", duration(investigation_seconds(events)),
+              help="From the start of the run (or follow-up run) until it paused for a human")
+    tokens = sum(u.get("input_tokens", 0) + u.get("output_tokens", 0) for u in (raw_values.get("usage") or {}).values())
+    c8.metric("Tokens used", f"{tokens:,}")
 
     review, typology_tab, network_tab, security_tab, findings_tab, evidence_tab, trace_tab, raw_tab = st.tabs(
         ["Review", "Typology & policy", "Network", "Security", "Findings", "Evidence", "Trace", "Raw state"])
@@ -295,14 +392,14 @@ def render_case(alert: dict, status: str | None, values: dict, packet: dict | No
         serious = [i for i in values.get("qa_issues", []) if i["severity"] in ("blocker", "major")]
         notes = [i for i in values.get("qa_issues", []) if i["severity"] == "minor"]
         if serious:
-            st.warning("Unresolved QA issues:\n" + "\n".join(f"- [{i['severity']}] {i['description']}"
-                                                             for i in serious))
+            st.markdown(f"**⚠️ Unresolved QA issues ({len(serious)})**")
+            st.markdown(issues_table(serious), unsafe_allow_html=True)
         if critic:
             checks = " ".join(f"{'✅' if ok else '❌'} {name.replace('_', ' ')}" for name, ok in critic["checks"].items())
             st.caption(f"QA critic ({critic['model'].split('.')[-1].split(':')[0]}): {checks}")
         if notes:
             with st.expander(f"QA notes ({len(notes)} minor)"):
-                st.markdown("\n".join(f"- {i['description']}" for i in notes))
+                st.markdown(issues_table(notes), unsafe_allow_html=True)
         st.markdown(f"**Summary.** {narrative.get('summary', '')}")
         st.markdown("**Claims**")
         for i, claim in enumerate(narrative.get("claims", []), 1):
@@ -348,9 +445,24 @@ def render_case(alert: dict, status: str | None, values: dict, packet: dict | No
     with security_tab:
         render_security(raw_values, alert["case_id"], alert.get("legal_entity", "UK"))
     with findings_tab:
+        usage = raw_values.get("usage") or {}
+        timed = [(label, usage[a]) for a, label in AGENT_LABELS.items() if usage.get(a, {}).get("seconds")]
+        st.markdown(f"**Time and usage by agent** · investigation {duration(investigation_seconds(events))} "
+                    "wall clock (KYC, Transactions and Screening run in parallel)")
+        if timed:
+            st.dataframe(pd.DataFrame([{"agent": label, "seconds": u["seconds"],
+                                        "model calls": u.get("model_calls", 0), "tool calls": u.get("tool_calls", 0),
+                                        "input tokens": u.get("input_tokens", 0),
+                                        "output tokens": u.get("output_tokens", 0)}
+                                       for label, u in timed]), width="stretch", hide_index=True)
+        else:
+            st.caption("No agent timings in this run: they are recorded by runs started after the console and "
+                       "worker were restarted on the current code.")
         for agent in ("triage", "kyc", "txn", "screening", "network", "typology", "qa"):
             if agent in findings:
-                with st.expander(agent.upper(), expanded=agent in ("kyc", "txn", "screening")):
+                seconds = usage.get(agent, {}).get("seconds")
+                took = f" · ⏱ {seconds:.0f}s" if seconds else " · rules, no model" if agent == "triage" else ""
+                with st.expander(f"{AGENT_LABELS.get(agent, agent.title())}{took}", expanded=False):
                     st.json(findings[agent])
     with evidence_tab:
         st.dataframe(pd.DataFrame(values.get("evidence", []), columns=["id", "agent", "source", "summary"]),
@@ -398,9 +510,13 @@ def render_network_diagram(customer_id: str) -> None:
     except Exception as e:  # noqa: BLE001 - graph down: the findings below still show
         st.warning(f"Network diagram unavailable ({type(e).__name__}).")
         return
-    if dot:
-        st.graphviz_chart(dot, width="stretch")
-        st.markdown(LEGEND, unsafe_allow_html=True)
+    if not dot:
+        return
+    if dot.count("shape=ellipse") == 1 and "shape=box" not in dot:  # only the case customer: nothing to draw
+        st.caption(f"{customer_id} has no linked customers or shared devices within 2 hops.")
+        return
+    st.graphviz_chart(dot, width="content")  # natural size: stretching blows small graphs up
+    st.markdown(LEGEND, unsafe_allow_html=True)
 
 
 def render_network(network: dict | None, tier: str | None, evidence: dict, customer_id: str) -> None:
@@ -469,28 +585,53 @@ async def stream_graph(payload, config: dict, on_update) -> object:
 
 
 def execute(case_id: str, payload, config: dict, label: str):
-    """Run (or resume) the graph, showing node-by-node progress; returns the final snapshot."""
-    with st.status(label, expanded=True) as status:
+    """Run (or resume) the graph, showing node-by-node progress and a running clock; returns the final
+    snapshot. The graph runs on a background thread so this script thread can tick the clock; only this
+    thread touches Streamlit, so progress comes back through a queue."""
+    updates: queue.Queue = queue.Queue()
+    outcome: dict = {}
 
-        def on_update(node: str, out: dict, elapsed: float) -> None:
-            lines = describe_update(node, out) or [f"[{node}]"]
-            emit(case_id, "node_completed", node, "; ".join(l.split("]", 1)[-1].strip() for l in lines))
-            for event in out.get("security_events") or []:
-                emit(case_id, "security_event", node, f"{event['kind']}: {event['detail']}", event.get("data"))
-                st.write(f"`{elapsed:5.1f}s` 🛡️ {event['kind']}: {event['detail']}")
-            for line in lines:
-                st.write(f"`{elapsed:5.1f}s` {line}")
-
+    def run() -> None:
         try:
-            snapshot = asyncio.run(stream_graph(payload, config, on_update))
-        except Exception as e:  # surface model/tool errors in the UI instead of a stack trace page
+            outcome["snapshot"] = asyncio.run(stream_graph(payload, config, lambda *u: updates.put(u)))
+        except Exception as e:  # noqa: BLE001 - reported below on the script thread
+            outcome["error"] = e
+
+    def show(node: str, out: dict, elapsed: float) -> None:
+        lines = describe_update(node, out) or [f"[{node}]"]
+        emit(case_id, "node_completed", node, "; ".join(l.split("]", 1)[-1].strip() for l in lines))
+        for event in out.get("security_events") or []:
+            emit(case_id, "security_event", node, f"{event['kind']}: {event['detail']}", event.get("data"))
+            st.write(f"`{elapsed:5.1f}s` 🛡️ {event['kind']}: {event['detail']}")
+        for line in lines:
+            st.write(f"`{elapsed:5.1f}s` {line}")
+
+    start = time.perf_counter()
+    with st.status(label, expanded=True) as status:
+        clock = st.empty()
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        last = "starting"
+        while worker.is_alive() or not updates.empty():
+            while not updates.empty():
+                node, out, elapsed = updates.get()
+                show(node, out, elapsed)
+                last = AGENT_LABELS.get(node, node.replace("_", " "))
+            elapsed = time.perf_counter() - start
+            clock.markdown(running_banner(elapsed, f"still working · last completed step: {last}"),
+                           unsafe_allow_html=True)
+            status.update(label=f"{label} · {duration(elapsed)}")
+            worker.join(timeout=0.5)
+        clock.empty()
+        total = duration(time.perf_counter() - start)
+        if e := outcome.get("error"):  # surface model/tool errors in the UI instead of a stack trace page
             emit(case_id, "error", detail=f"{type(e).__name__}: {str(e)[:200]}")
             state.direct[case_id]["status"] = "error"
-            status.update(label=f"Failed: {type(e).__name__}", state="error")
+            status.update(label=f"Failed after {total}: {type(e).__name__}", state="error")
             st.exception(e)
             st.stop()
-        status.update(label=f"{label}: done", state="complete", expanded=False)
-    return snapshot
+        status.update(label=f"{label}: done in {total}", state="complete", expanded=False)
+    return outcome["snapshot"]
 
 
 def direct_run(alert: dict) -> None:
@@ -608,12 +749,22 @@ def publish_decision(case_id: str, decision: dict) -> None:
     asyncio.run(kafka.publish(DECISIONS_TOPIC, [DecisionEvent(case_id=case_id, **decision)]))
 
 
-@st.fragment(run_every=3)
+def mark_published(case_id: str) -> None:
+    state.setdefault("published_at", {})[case_id] = now()
+
+
+@st.fragment(run_every=2)
 def live_progress(case_id: str, seen_status: str | None, waiting_for: str) -> None:
-    """Poll status and events every 3 s; rerun the page once the worker moves the case on."""
+    """Poll status and events every 2 s; rerun the page once the worker moves the case on."""
     status = case_status(case_id)
     events = asyncio.run(kafka.read_events(case_id))
-    st.markdown(f"{pill(status)} &nbsp; {waiting_for}", unsafe_allow_html=True)
+    start = latest_start(events) if status == "in_progress" else None
+    since = start["at"] if start else state.get("published_at", {}).get(case_id)
+    steps = [e for e in events if e["type"] == "node_completed" and (not start or e["at"] >= start["at"])]
+    detail = waiting_for + (f" · last completed step: {AGENT_LABELS.get(steps[-1]['node'], steps[-1]['node'])}"
+                            if steps and start else "")
+    st.markdown(pill(status), unsafe_allow_html=True)
+    st.markdown(running_banner(seconds_between(since, now()) if since else 0, detail), unsafe_allow_html=True)
     st.dataframe(events_frame(events), width="stretch", hide_index=True)
     if status != seen_status:
         st.rerun(scope="app")
@@ -665,6 +816,7 @@ def kafka_case_view(case_id: str) -> None:
 
     def published(kind: str) -> None:
         pending[case_id] = (kind, status)  # remembered until the status changes
+        mark_published(case_id)
         st.rerun()
 
     def on_decision(decision: dict) -> None:
@@ -745,13 +897,17 @@ with st.sidebar:
             publish_alert(alert)
             state.case = alert["case_id"]
             state.setdefault("pending", {})[alert["case_id"]] = "alert"
+            mark_published(alert["case_id"])
             st.toast(f"Published {alert['case_id']} to {ALERTS_TOPIC}")
         if st.button("Open this case", width="stretch"):
             state.case = alert["case_id"]
         st.caption("The worker (`sentinel worker all`) processes alerts and decisions.")
-    st.caption(f"Region `{settings.aws_region}` · models: kyc `{settings.model_kyc}`, txn `{settings.model_txn}`, "
-               f"screening `{settings.model_screening}`, narrative `{settings.model_narrative}` · "
-               f"Kafka `{settings.kafka_bootstrap}`")
+    st.markdown("**Configuration**")
+    config_rows = [("Region", settings.aws_region), *((AGENT_LABELS[a], getattr(settings, f"model_{a}")) for a in
+                   ("kyc", "txn", "screening", "network", "typology", "narrative", "qa")),
+                   ("Customer request", settings.model_narrative), ("Embeddings", settings.model_embedding),
+                   ("Kafka", settings.kafka_bootstrap)]
+    st.markdown("| | |\n|---|---|\n" + "\n".join(f"| {k} | `{v}` |" for k, v in config_rows))
 
 header(mode)
 if mode == DIRECT:

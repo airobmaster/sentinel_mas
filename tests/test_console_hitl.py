@@ -36,8 +36,10 @@ def test_approval_then_request_info_then_customer_reply(stubbed_graph):
     button(at, "Approve").click().run()
     assert not at.exception, at.exception
 
-    # Disposition: request info (the recommendation)
-    assert {m.label: m.value for m in at.metric}["Recommendation"] == "request_info"
+    # Disposition: request info (the recommendation); the summary shows how long the run took
+    metrics = {m.label: m.value for m in at.metric}
+    assert metrics["Recommendation"] == "request_info" and metrics["Investigation time"].endswith("s")
+    assert any("Time and usage by agent" in m.value for m in at.markdown)
     button(at, "Submit decision").click().run()
     assert any("Decision recorded: **request_info**" in s.value for s in at.success)
 

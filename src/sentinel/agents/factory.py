@@ -11,6 +11,7 @@ sessions that stay open for the run). Guardrails wrap every run (middleware/guar
 PII redaction with reversible tokens, OPA authorisation, the injection rail and call budgets.
 """
 
+import time
 from dataclasses import dataclass, field
 
 from langchain.agents import create_agent
@@ -23,7 +24,7 @@ from pydantic import BaseModel
 from sentinel import data
 from sentinel.config import settings
 from sentinel.guardrails.events import SECURITY_EVENTS, record
-from sentinel.guardrails.pii import PII_VAULT, PiiVault
+from sentinel.guardrails.pii import PII_VAULT, TOKEN_NOTE, PiiVault
 from sentinel.middleware.guards import injection_rail, pii_redaction, pii_restore, redact_messages
 from sentinel.middleware.opa import CASE_CONTEXT, opa_authorize
 from sentinel.prompts import load_prompt
@@ -107,9 +108,10 @@ async def run_specialist(spec: Specialist, brief: str, state: dict,
     PII_VAULT.set(vault)
     events: list = []
     SECURITY_EVENTS.set(events)
-    messages: list[BaseMessage] = [HumanMessage(brief)]
+    messages: list[BaseMessage] = [HumanMessage(brief + (TOKEN_NOTE if settings.pii_redaction else ""))]
     finalise = FINALISE
     ids = list(extra_ids or [])
+    start = time.perf_counter()
     with get_usage_metadata_callback() as usage_cb:
         if AGENT_TOOLS.get(spec.name):
             messages = await run_tool_loop(spec, messages)
@@ -129,6 +131,7 @@ async def run_specialist(spec: Specialist, brief: str, state: dict,
         "input_tokens": sum(u.get("input_tokens", 0) for u in usage_cb.usage_metadata.values()),
         "output_tokens": sum(u.get("output_tokens", 0) for u in usage_cb.usage_metadata.values()),
         "model_calls": model_calls, "tool_calls": tool_calls,
+        "seconds": round(time.perf_counter() - start, 1),
     }}
     return result, messages, RunRecord(events, usage, vault.mapping)
 

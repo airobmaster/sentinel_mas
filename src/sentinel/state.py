@@ -34,15 +34,15 @@ def add_events(left: list, right: list) -> list:
     return [*(left or []), *(right or [])]
 
 
-USAGE_KEYS = ("input_tokens", "output_tokens", "model_calls", "tool_calls")
+USAGE_KEYS = ("input_tokens", "output_tokens", "model_calls", "tool_calls", "seconds")
 
 
 def add_usage(left: dict, right: dict) -> dict:
-    """Per-agent token and call counts, summed across rework rounds."""
+    """Per-agent token and call counts and run time (seconds), summed across rework rounds."""
     merged = dict(left or {})
     for agent, usage in (right or {}).items():
         current = merged.get(agent, {})
-        merged[agent] = {k: current.get(k, 0) + usage.get(k, 0) for k in USAGE_KEYS}
+        merged[agent] = {k: round(current.get(k, 0) + usage.get(k, 0), 1) for k in USAGE_KEYS}
     return merged
 
 

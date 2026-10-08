@@ -20,7 +20,8 @@ def test_customer_name_and_dob_become_stable_tokens():
     vault = PiiVault(CUSTOMER)
     text = vault.redact("Screen JORDAN ELLIS (born 1994-02-17); Jordan called on Monday. Ellis is a shop assistant.")
     assert "Jordan" not in text and "ELLIS" not in text and "1994-02-17" not in text
-    assert text.count("<PERSON_") == 3 and "<DOB_" in text
+    assert "<CUSTOMER_NAME_" in text and "<CUSTOMER_FIRST_NAME_" in text and "<CUSTOMER_SURNAME_" in text
+    assert "<CUSTOMER_DOB_" in text
     again = PiiVault(CUSTOMER).redact("Jordan Ellis")
     assert again in text  # same value -> same token, across vaults
     assert vault.restore(text).startswith("Screen JORDAN ELLIS (born 1994-02-17)")
@@ -47,6 +48,14 @@ def test_presidio_spans_skip_codes_and_ids(monkeypatch):
     out = PiiVault().redact(text)
     assert "Margaret" not in out and all(p in out for p in phrases if p != "Margaret Thompson")
     assert pii._is_name("María de la Fuente") and not pii._is_name("El investigador cierra")
+    assert not pii._is_name("TYP-GUIDE") and not pii._is_name("AML-UK") and pii._is_name("Smith-Jones")
+
+
+def test_usage_sums_seconds_across_rounds():
+    from sentinel.state import add_usage
+
+    merged = add_usage({"kyc": {"input_tokens": 10, "seconds": 12.3}}, {"kyc": {"input_tokens": 5, "seconds": 4.5}})
+    assert merged["kyc"]["input_tokens"] == 15 and merged["kyc"]["seconds"] == 16.8
 
 
 def test_restore_walks_nested_tool_arguments():
@@ -63,7 +72,16 @@ def test_redaction_can_be_switched_off(monkeypatch):
 
 def test_content_blocks_are_redacted():
     blocks = redact_content([{"type": "text", "text": "Jordan Ellis"}, {"type": "image"}], PiiVault(CUSTOMER))
-    assert blocks[0]["text"].startswith("<PERSON_") and blocks[1] == {"type": "image"}
+    assert blocks[0]["text"].startswith("<CUSTOMER_NAME_") and blocks[1] == {"type": "image"}
+
+
+def test_name_variants_stay_comparable():
+    vault = PiiVault({"name": "Arlo Brennan Voss", "dob": "1971-04-12"})
+    article = vault.redact("Arlo Voss, director of Voss Trading Ltd")
+    first, surname = vault.redact("Arlo"), vault.redact("Voss")
+    assert first.startswith("<CUSTOMER_FIRST_NAME_") and surname.startswith("<CUSTOMER_SURNAME_")
+    assert article == f"{first} {surname}, director of {surname} Trading Ltd"
+    assert vault.redact("Arlo Brennan Voss").startswith("<CUSTOMER_NAME_")
 
 
 def test_injection_rail():

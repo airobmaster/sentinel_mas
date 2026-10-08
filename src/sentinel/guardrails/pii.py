@@ -8,7 +8,8 @@ only) so the console can show investigators the real values.
 
 Detection, in order:
 1. email addresses (so a surname inside one does not split it);
-2. the case customer's own name, first name, surname and date of birth (exact, case-insensitive);
+2. the case customer's own name, first/middle/surname and date of birth (exact, case-insensitive),
+   as typed tokens such as <CUSTOMER_SURNAME_9b1d2e> so agents can still compare name variants;
 3. patterns: IBAN, UK sort code, phone number;
 4. Presidio (spaCy en_core_web_lg, run as a Docker service) for other people's names.
 If the Presidio service is unavailable, 1-3 still run.
@@ -39,7 +40,13 @@ PATTERNS = {
 }
 # Spans Presidio may tag as PERSON that are really system identifiers, codes or tokens
 # (reason/typology codes such as STRUCTURING_CONFIRMED contain underscores; names never do)
-NOT_A_PERSON = re.compile(r"(CUST|ACC|TXN|CASE|CRM|MED|DEV|OFSI|PEP|TM)-|<|_|policy:|check:")
+# (and document codes such as TYP-GUIDE or AML-UK, upper case joined by a hyphen)
+NOT_A_PERSON = re.compile(r"(CUST|ACC|TXN|CASE|CRM|MED|DEV|OFSI|PEP|TM)-|<|_|policy:|check:|@|\b[A-Z]{2,}-[A-Z]{2,}\b")
+# Told to every agent with its brief, so tokens are read as the values they stand for
+TOKEN_NOTE = ("\n\nPrivacy: personal data appears as tokens. <CUSTOMER_NAME_x>, <CUSTOMER_FIRST_NAME_x>, "
+              "<CUSTOMER_MIDDLE_NAME_x>, <CUSTOMER_SURNAME_x> and <CUSTOMER_DOB_x> are this case's customer; "
+              "<PERSON_x> is another person. The same token always means the same value. Compare tokens as you "
+              "would the names (e.g. first name + surname without the middle name is still the customer's name).")
 NAME_PARTICLES = {"de", "del", "la", "las", "los", "da", "das", "do", "dos", "van", "von", "der", "den", "y"}
 
 
@@ -91,12 +98,17 @@ class PiiVault:
         self.mapping: dict[str, str] = dict(mapping or {})
         terms: list[tuple[str, str]] = []
         if customer:
-            name = customer.get("name") or ""
-            parts = [p for p in name.split() if len(p) >= 3]
-            terms += [("PERSON", name)] + [("PERSON", p) for p in parts]
+            # Typed tokens keep the relation between name parts visible: an article naming "Arlo Voss"
+            # becomes <CUSTOMER_FIRST_NAME_..> <CUSTOMER_SURNAME_..>, so the screening agent can still
+            # tell it is the customer without the middle name.
+            parts = (customer.get("name") or "").split()
+            if parts:
+                terms.append(("CUSTOMER_NAME", " ".join(parts)))
+                kinds = ["CUSTOMER_FIRST_NAME", *["CUSTOMER_MIDDLE_NAME"] * (len(parts) - 2), "CUSTOMER_SURNAME"]
+                terms += [(kind, p) for kind, p in zip(kinds, parts) if len(p) >= 3 and len(parts) > 1]
             if customer.get("dob"):
-                terms.append(("DOB", customer["dob"]))
-        # Longest first so "Jordan Ellis" is replaced before "Jordan"
+                terms.append(("CUSTOMER_DOB", customer["dob"]))
+        # Longest first so "Jordan Ellis" is replaced before "Jordan"; terms is (kind, value)
         self.terms = sorted({t for t in terms if t[1]}, key=lambda t: -len(t[1]))
 
     def _tok(self, kind: str, value: str) -> str:
