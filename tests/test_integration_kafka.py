@@ -16,11 +16,13 @@ from sentinel.graph import compile_graph, run_config
 from sentinel.persistence import durable_state
 from sentinel.workers import HANDLERS, run_worker
 from tests import stubs
+from tests.kafka_guard import worker_running
 
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(any(socket.socket().connect_ex(("localhost", p)) for p in (5432, 9092)),
                        reason="Postgres or Kafka not running"),
+    pytest.mark.skipif(worker_running(), reason="a Sentinel worker is running and would take the test's messages"),
 ]
 
 

@@ -23,7 +23,7 @@ class FakeCases:
         self.status[alert["case_id"]] = "in_progress"
         self.threads[alert["case_id"]] = thread_id or alert["case_id"]
 
-    async def set_status(self, case_id, status):
+    async def set_status(self, case_id, status, tier=None):
         self.status[case_id] = status
 
     async def thread_for(self, case_id):
@@ -61,6 +61,58 @@ async def test_duplicate_alert_is_ignored(env):
     await workers.handle_alert(env.graph, ALERT, env.publish, env.cases)
     assert await workers.handle_alert(env.graph, ALERT, env.publish, env.cases) == "duplicate"
     assert len(env.narrative.calls) == 1 and types(env)[-1] == "duplicate_ignored"
+
+
+class ServiceUnavailable(Exception):  # like botocore's errors: retried by the node's RetryPolicy
+    pass
+
+
+async def test_failed_run_resumes_from_its_checkpoint_on_redelivery():
+    """A step that fails after its retries leaves the run mid-way; the redelivered alert resumes it
+    (completed steps are not run again) instead of being ignored as a duplicate."""
+    calls = {"typology": 0}
+
+    async def flaky_typology(state):
+        calls["typology"] += 1
+        if calls["typology"] <= 3:  # the node's RetryPolicy allows 3 attempts
+            raise ServiceUnavailable("Bedrock is unable to process your request")
+        return await stubs.typology(state)
+
+    narrative = stubs.narrative(["txn:TXN-1006"])
+    graph = compile_graph(nodes=stubs.nodes(typology=flaky_typology, narrative=narrative))
+    events, cases = [], FakeCases()
+
+    async def publish(event):
+        events.append(event)
+
+    with pytest.raises(ServiceUnavailable):
+        await workers.handle_alert(graph, ALERT, publish, cases)
+    assert cases.status["CASE-0001"] == "in_progress"
+    assert await workers.handle_alert(graph, ALERT, publish, cases) == "awaiting_review"
+    kinds = [e.type for e in events]
+    assert "case_resumed" in kinds and "duplicate_ignored" not in kinds
+    assert [e.node for e in events if e.type == "node_completed"].count("kyc") == 1  # not re-run
+    assert calls["typology"] == 4 and len(narrative.calls) == 1
+    # Once paused for review, a further redelivery is a real duplicate
+    assert await workers.handle_alert(graph, ALERT, publish, cases) == "duplicate"
+
+
+async def test_qa_degrades_when_the_critic_model_is_unavailable(monkeypatch):
+    from botocore.exceptions import ClientError
+
+    from sentinel.agents import qa as qa_module
+
+    async def unavailable(state):
+        raise ClientError({"Error": {"Code": "ServiceUnavailableException",
+                                     "Message": "Bedrock is unable to process your request."}}, "Converse")
+
+    monkeypatch.setattr(settings, "qa_llm_critic", True)
+    monkeypatch.setattr(qa_module, "critic", unavailable)
+    monkeypatch.setattr(qa_module, "check_completeness", lambda state: [])
+    monkeypatch.setattr(qa_module, "check_citations", lambda state: [])
+    out = await qa_module.qa({"usage": {}})
+    assert out["rework_target"] is None and out["findings"]["qa"]["passed"] is None
+    assert out["qa_issues"][0]["severity"] == "minor" and "[critic unavailable]" in out["qa_issues"][0]["description"]
 
 
 async def test_decision_resumes_once(env):

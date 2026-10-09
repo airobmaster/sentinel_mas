@@ -8,25 +8,44 @@ import threading
 import time
 from pathlib import Path
 
+import psycopg
 import pytest
 from streamlit.testing.v1 import AppTest
 
+from sentinel import data
+from sentinel.config import settings
 from sentinel.graph import compile_graph
 from sentinel.persistence import durable_state, reset_case
 from sentinel.workers import HANDLERS, run_worker
 from tests import stubs
+from tests.kafka_guard import worker_running
 
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(any(socket.socket().connect_ex(("localhost", p)) for p in (5432, 9092)),
                        reason="Postgres or Kafka not running"),
+    pytest.mark.skipif(worker_running(), reason="a Sentinel worker is running and would take the test's messages"),
 ]
 APP = Path(__file__).resolve().parents[1] / "devtools" / "streamlit_app.py"
-CASE = "CASE-0001"
+CASE = "CASE-ITC-0001"  # a temporary copy of CASE-0001: real cases keep their runs and event history
 
 
 @pytest.fixture
-def stub_worker():
+def test_case():
+    with psycopg.connect(settings.pg_dsn, autocommit=True) as conn:
+        conn.execute("""INSERT INTO cases.alerts (case_id, legal_entity, customer_id, alert, expected, status)
+                        SELECT %s, legal_entity, customer_id, alert || jsonb_build_object('case_id', %s::text),
+                               expected, 'new' FROM cases.alerts WHERE case_id = 'CASE-0001'
+                        ON CONFLICT (case_id) DO NOTHING""", (CASE, CASE))
+    data.backend.cache_clear()
+    yield
+    reset_case(CASE)
+    with psycopg.connect(settings.pg_dsn, autocommit=True) as conn:
+        conn.execute("DELETE FROM cases.alerts WHERE case_id = %s", (CASE,))
+
+
+@pytest.fixture
+def stub_worker(test_case):
     stop = threading.Event()
 
     async def main():
@@ -65,7 +84,7 @@ def test_console_kafka_mode_publish_review_decide(stub_worker):
     at = AppTest.from_file(str(APP), default_timeout=60)
     at.run()
     at.sidebar.radio[0].set_value("Kafka (full stack)").run()
-    at.sidebar.selectbox[0].select(f"{CASE} · STRUCT").run()
+    at.sidebar.selectbox[0].select(next(o for o in at.sidebar.selectbox[0].options if o.startswith(CASE))).run()
     next(b for b in at.sidebar.button if "Publish alert" in b.label).click().run()
     assert not at.exception, at.exception
 

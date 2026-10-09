@@ -67,7 +67,8 @@ STATUS_ICON = {"new": "⚪", "in_progress": "🔵", "awaiting_approval": "🟠",
                "escalated": "🔴", "info_requested": "🟣", "error": "⛔", None: "⚪"}
 TERMINAL = ("closed", "escalated", "info_requested")
 ALL_STATUSES = list(OPEN_STATUSES) + list(TERMINAL) + ["error"]
-DIRECT, KAFKA = "Direct (in-process)", "Kafka (full stack)"
+DIRECT, KAFKA, API = "Direct (in-process)", "Kafka (full stack)", "API (full stack)"
+MODE_BADGE = {DIRECT: "Direct", KAFKA: "Kafka", API: "API"}
 
 st.set_page_config(page_title="Sentinel · AML Investigation Console", page_icon="🛡️", layout="wide")
 state = st.session_state
@@ -117,6 +118,8 @@ html, body, .stApp, .stMarkdown, p, li, label, input, textarea, button, h1, h2, 
 .sn-issues th { text-align: left; background: #F1F4F8; color: #3D4F66; font-weight: 600; padding: 7px 10px;
     border-bottom: 1px solid #DCE3EB; }
 .sn-issues td { padding: 7px 10px; border-bottom: 1px solid #EDF1F5; vertical-align: top; color: #1F2D3D; }
+.sn-issues .num { text-align: right; font-variant-numeric: tabular-nums; }
+.sn-issues tr.total td { font-weight: 700; background: #EEF2F7; border-top: 2px solid #CBD5E1; color: #0B2545; }
 .sn-sev { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 600;
     white-space: nowrap; }
 .sn-sev.blocker { background: #FDE7E7; color: #B42318; }
@@ -173,6 +176,12 @@ def latest_start(events: list[dict]) -> dict | None:
     return next((e for e in reversed(events) if e["type"] in START_EVENTS), None)
 
 
+def current_run(events: list[dict]) -> list[dict]:
+    """Events of the latest run (or follow-up run) only: earlier runs of a reset case are left out."""
+    start = latest_start(events)
+    return [e for e in events if e["at"] >= start["at"]] if start else events
+
+
 def investigation_seconds(events: list[dict]) -> float | None:
     """Wall-clock time of the latest run (or follow-up run): from its start to the first pause after it."""
     if not (start := latest_start(events)):
@@ -197,7 +206,7 @@ def knowledge_sources() -> dict[str, tuple[str, bool]]:
 
 def header(mode: str) -> None:
     opa = "on" if settings.opa_url else "off"
-    badges = [("Mode", "Kafka" if mode == KAFKA else "Direct"), ("Data", settings.data_backend),
+    badges = [("Mode", MODE_BADGE[mode]), ("Data", settings.data_backend),
               ("Tools", settings.tool_mode.upper()), ("Policy (OPA)", opa), ("Model", settings.model_narrative)]
     badge_html = "".join(f'<span class="sn-badge">{k}: <b>{v}</b></span>' for k, v in badges)
     badge_html += "".join(
@@ -222,8 +231,10 @@ def case_heading(case_id: str, scenario: str, status: str | None) -> None:
 
 # --- Shared views -------------------------------------------------------------------------------
 def events_frame(events: list[dict]) -> pd.DataFrame:
+    """Case events as a table, newest first."""
     rows = [{"time": e["at"][11:19], "case": e["case_id"], "event": e["type"], "node": e.get("node") or "",
-             "detail": e.get("detail") or (json.dumps(e["data"]) if e.get("data") else "")} for e in events]
+             "detail": e.get("detail") or (json.dumps(e["data"]) if e.get("data") else "")}
+            for e in sorted(events, key=lambda e: e["at"], reverse=True)]
     return pd.DataFrame(rows, columns=["time", "case", "event", "node", "detail"])
 
 
@@ -301,7 +312,7 @@ def render_security(values: dict, case_id: str, legal_entity: str) -> None:
     c1.metric("Injections caught", kinds.count("injection_detected"))
     c2.metric("Tool calls denied", kinds.count("tool_denied"))
     c3.metric("Tokens used", f"{tokens:,}", help=f"Case budget {settings.case_token_budget:,}")
-    c4.metric("PII values redacted", len(values.get("pii_vault") or {}),
+    c4.metric("PII values redacted", len(values.get("pii_vault") or {}) or values.get("pii_values_redacted", 0),
               help="Models only ever saw tokens such as <PERSON_3fa91c> for these values")
     if values.get("budget_exceeded"):
         st.error("Token budget exceeded: the case went to human review without further automated rework.")
@@ -342,6 +353,23 @@ def issues_table(issues: list[dict]) -> str:
             '<th style="width:120px">Sent to</th><th>Issue</th></tr>' + "".join(rows) + "</table>")
 
 
+USAGE_COLUMNS = {"seconds": "Seconds", "model_calls": "Model calls", "tool_calls": "Tool calls",
+                 "input_tokens": "Input tokens", "output_tokens": "Output tokens"}
+
+
+def usage_table(timed: list[tuple[str, dict]]) -> str:
+    """Per-agent time and usage with a bold total row (seconds add up agent time, not wall clock)."""
+    def cells(values: dict) -> str:
+        return "".join(f'<td class="num">{values.get(k, 0):,.1f}</td>' if k == "seconds" else
+                       f'<td class="num">{int(values.get(k, 0)):,}</td>' for k in USAGE_COLUMNS)
+
+    total = {k: sum(u.get(k, 0) for _, u in timed) for k in USAGE_COLUMNS}
+    rows = "".join(f"<tr><td>{label}</td>{cells(u)}</tr>" for label, u in timed)
+    head = "".join(f'<th class="num">{h}</th>' for h in USAGE_COLUMNS.values())
+    return (f'<table class="sn-issues"><tr><th>Agent</th>{head}</tr>{rows}'
+            f'<tr class="total"><td>Total</td>{cells(total)}</tr></table>')
+
+
 def for_display(values: dict) -> dict:
     """Agents' outputs carry PII tokens; investigators see the real values unless they choose not to."""
     if not state.get("show_pii", True):
@@ -369,7 +397,8 @@ def render_case(alert: dict, status: str | None, values: dict, packet: dict | No
     c1.metric("Recommendation", typology.get("recommendation") or narrative.get("recommendation", "-"))
     c2.metric("Reason code", typology.get("reason_code") or narrative.get("reason_code", "-"))
     rounds = values.get("qa_rounds", 0)
-    c3.metric("QA", ("✓ passed" if critic["passed"] else "✗ issues raised") if critic else "code checks",
+    c3.metric("QA", ("⚠ critic unavailable" if critic.get("error") else "✓ passed" if critic["passed"] else
+                     "✗ issues raised") if critic else "code checks",
               help=f"{rounds} QA round(s); the critic's findings are listed in the Review tab")
     c4, c5, c6, c7, c8 = st.columns(5)
     c4.metric("Risk score", typology.get("risk_score", "-"))
@@ -396,7 +425,8 @@ def render_case(alert: dict, status: str | None, values: dict, packet: dict | No
             st.markdown(issues_table(serious), unsafe_allow_html=True)
         if critic:
             checks = " ".join(f"{'✅' if ok else '❌'} {name.replace('_', ' ')}" for name, ok in critic["checks"].items())
-            st.caption(f"QA critic ({critic['model'].split('.')[-1].split(':')[0]}): {checks}")
+            st.caption(f"QA critic ({critic['model'].split('.')[-1].split(':')[0]}): "
+                       + (f"unavailable ({critic['error']})" if critic.get("error") else checks))
         if notes:
             with st.expander(f"QA notes ({len(notes)} minor)"):
                 st.markdown(issues_table(notes), unsafe_allow_html=True)
@@ -450,11 +480,7 @@ def render_case(alert: dict, status: str | None, values: dict, packet: dict | No
         st.markdown(f"**Time and usage by agent** · investigation {duration(investigation_seconds(events))} "
                     "wall clock (KYC, Transactions and Screening run in parallel)")
         if timed:
-            st.dataframe(pd.DataFrame([{"agent": label, "seconds": u["seconds"],
-                                        "model calls": u.get("model_calls", 0), "tool calls": u.get("tool_calls", 0),
-                                        "input tokens": u.get("input_tokens", 0),
-                                        "output tokens": u.get("output_tokens", 0)}
-                                       for label, u in timed]), width="stretch", hide_index=True)
+            st.markdown(usage_table(timed), unsafe_allow_html=True)
         else:
             st.caption("No agent timings in this run: they are recorded by runs started after the console and "
                        "worker were restarted on the current code.")
@@ -468,7 +494,9 @@ def render_case(alert: dict, status: str | None, values: dict, packet: dict | No
         st.dataframe(pd.DataFrame(values.get("evidence", []), columns=["id", "agent", "source", "summary"]),
                      width="stretch", hide_index=True)
     with trace_tab:
-        st.dataframe(events_frame(events), width="stretch", hide_index=True)
+        earlier = len(events) - len(current_run(events))
+        include = earlier and st.toggle(f"Include earlier runs ({earlier} events)", key=f"trace-all-{alert['case_id']}")
+        st.dataframe(events_frame(events if include else current_run(events)), width="stretch", hide_index=True)
         st.markdown("**Prompt / model versions**")
         st.json(values.get("versions", {}))
     with raw_tab:
@@ -558,7 +586,7 @@ def render_queue(rows: list[dict], key: str, note: str) -> None:
 
 def render_stream(events: list[dict], note: str) -> None:
     st.caption(f"{len(events)} event(s) · {note} Newest first.")
-    st.dataframe(events_frame(events[::-1][:300]), width="stretch", hide_index=True)
+    st.dataframe(events_frame(events[-300:]), width="stretch", hide_index=True)
 
 
 # --- Direct mode --------------------------------------------------------------------------------
@@ -756,16 +784,18 @@ def mark_published(case_id: str) -> None:
 @st.fragment(run_every=2)
 def live_progress(case_id: str, seen_status: str | None, waiting_for: str) -> None:
     """Poll status and events every 2 s; rerun the page once the worker moves the case on."""
-    status = case_status(case_id)
-    events = asyncio.run(kafka.read_events(case_id))
+    show_progress(case_id, case_status(case_id), asyncio.run(kafka.read_events(case_id)), seen_status, waiting_for)
+
+
+def show_progress(case_id: str, status: str | None, events: list[dict], seen_status: str | None,
+                  waiting_for: str) -> None:
     start = latest_start(events) if status == "in_progress" else None
     since = start["at"] if start else state.get("published_at", {}).get(case_id)
     steps = [e for e in events if e["type"] == "node_completed" and (not start or e["at"] >= start["at"])]
     detail = waiting_for + (f" · last completed step: {AGENT_LABELS.get(steps[-1]['node'], steps[-1]['node'])}"
                             if steps and start else "")
-    st.markdown(pill(status), unsafe_allow_html=True)
     st.markdown(running_banner(seconds_between(since, now()) if since else 0, detail), unsafe_allow_html=True)
-    st.dataframe(events_frame(events), width="stretch", hide_index=True)
+    st.dataframe(events_frame(current_run(events)), width="stretch", hide_index=True)
     if status != seen_status:
         st.rerun(scope="app")
 
@@ -860,13 +890,174 @@ def kafka_mode() -> None:
         kafka_case_view(state.case)
 
 
+# --- API mode -----------------------------------------------------------------------------------
+# Everything goes through the Sentinel API with a signed-in test user's token: the same calls the
+# React workbench will make. Roles change what you may do (BR-08, UC-03, UC-05) and see (FR-109).
+API_ROLES = {"l1": "L1 analyst", "l2": "L2 investigator", "qa": "QA reviewer", "admin": "Administrator"}
+QA_RUBRIC = {"evidence_complete": "Evidence complete", "citations_accurate": "Citations accurate",
+             "recommendation_sound": "Recommendation sound", "narrative_clear": "Narrative clear"}
+
+
+@st.cache_data(ttl=3000, show_spinner=False)  # Cognito access tokens last an hour
+def api_token(role: str) -> str:
+    from sentinel.api.auth import token_for
+
+    return token_for(role)
+
+
+def api_call(method: str, path: str, **kwargs):
+    import httpx
+
+    headers = {"Authorization": f"Bearer {api_token(state.get('api_role', 'l2'))}"}
+    return httpx.request(method, f"{settings.api_url}{path}", headers=headers, timeout=30, **kwargs)
+
+
+def api_case(case_id: str) -> dict | None:
+    resp = api_call("GET", f"/cases/{case_id}")
+    return resp.json() if resp.status_code == 200 else None
+
+
+def api_submit(case_id: str, status: str, path: str, body: dict, kind: str) -> None:
+    """POST a change; on success remember it as pending until the case leaves `status`, read before the
+    POST (the worker often applies the change before a read after it could see the old status).
+    Otherwise keep the API's refusal to show."""
+    resp = api_call("POST", path, json=body)
+    if resp.status_code in (201, 202):
+        state.setdefault("api_pending", {})[case_id] = (kind, status)
+        mark_published(case_id)
+    else:
+        state["api_flash"] = f"API refused ({resp.status_code}): {resp.json().get('detail')}"
+    st.rerun()
+
+
+@st.fragment(run_every=2)
+def api_live_progress(case_id: str, seen_status: str | None, waiting_for: str) -> None:
+    case = api_case(case_id)
+    status = case["case"]["status"] if case else None
+    events = api_call("GET", f"/cases/{case_id}/events").json() if case else []
+    show_progress(case_id, status, events, seen_status, waiting_for)
+
+
+def api_case_view(case_id: str) -> None:
+    if flash := state.pop("api_flash", None):
+        st.error(flash)
+    case = api_case(case_id)
+    alert = (case or {}).get("case", {}).get("alert") or data.get_alert(case_id) or {"case_id": case_id,
+                                                                                   "scenario_name": ""}
+    status = case["case"]["status"] if case else None
+    pending = state.setdefault("api_pending", {})
+    if status in (None, "new", "in_progress", "error"):
+        case_heading(case_id, alert.get("scenario_name", ""), status)
+    if status in (None, "new"):
+        if case_id in pending:
+            api_live_progress(case_id, status, "waiting for a worker to pick up the alert")
+        else:
+            st.info("Not started. Use **Submit alert via API** in the sidebar.")
+        return
+    if status == "in_progress":
+        api_live_progress(case_id, status, "the worker is investigating")
+        return
+    events = api_call("GET", f"/cases/{case_id}/events").json()
+    if status == "error":
+        st.error("The worker could not process this case; see the events below.")
+        st.dataframe(events_frame(events), width="stretch", hide_index=True)
+        return
+
+    values = case["state"]
+    packet = {**case["waiting_for"], **(case["recommendation"] or {})} if case["waiting_for"] else None
+    sent = pending.get(case_id)
+    if isinstance(sent, tuple) and sent[1] != status:
+        pending.pop(case_id, None)
+        sent = None
+    note = {"decision": "Decision accepted by the API; waiting for the worker to apply it.",
+            "approval": "Approval accepted by the API; waiting for the worker to apply it.",
+            "reply": "Reply accepted by the API; waiting for the worker to start the follow-up."}.get(
+        sent[0]) if isinstance(sent, tuple) else None
+
+    def on_decision(decision: dict) -> None:
+        api_submit(case_id, status, f"/cases/{case_id}/decision",
+                   {k: decision.get(k) for k in ("action", "reason_code", "narrative_edits")}, "decision")
+
+    def on_approval(approval: dict) -> None:
+        body = {k: approval[k] for k in ("action", "message", "questions") if approval.get(k)}
+        api_submit(case_id, status, f"/cases/{case_id}/approval", body, "approval")
+
+    def on_reply(text: str) -> None:
+        api_submit(case_id, status, f"/cases/{case_id}/reply", {"reply_text": text}, "reply")
+
+    render_case(alert, status, values, packet, events, on_decision, note, on_approval=on_approval, on_reply=on_reply)
+    if note:
+        api_live_progress(case_id, status, note)
+
+
+def render_qa_review() -> None:
+    """UC-05: a QA reviewer samples decided cases and scores them against the rubric."""
+    resp = api_call("GET", "/qa/sample", params={"n": 10})
+    if resp.status_code == 403:
+        st.info("QA review needs the **QA reviewer** role: switch role in the sidebar.")
+        return
+    sample = resp.json()
+    if not sample:
+        st.success("Nothing left to review: every decided case has your label.")
+        return
+    picked = st.selectbox("Sampled case", [r["case_id"] for r in sample],
+                          format_func=lambda c: next(f"{c} · {r['status']} · {r['scenario']}"
+                                                     for r in sample if r["case_id"] == c))
+    case = api_case(picked) or {}
+    narrative = (case.get("state") or {}).get("narrative") or {}
+    decision = (case.get("state") or {}).get("decision") or {}
+    st.markdown(f"**Recommendation:** `{(case.get('recommendation') or {}).get('recommendation')}` · "
+                f"**Decision:** `{decision.get('action')}` ({decision.get('reason_code')}) by "
+                f"{decision.get('investigator_id')}")
+    st.markdown(f"**Summary.** {narrative.get('summary', '')}")
+    with st.form(f"qa-{picked}"):
+        cols = st.columns(len(QA_RUBRIC))
+        scores = {key: col.slider(label, 1, 5, 3) for col, (key, label) in zip(cols, QA_RUBRIC.items())}
+        correct = st.toggle("The final decision was correct", value=True)
+        comment = st.text_area("Comment (optional)")
+        if st.form_submit_button("Save label", type="primary"):
+            body = {**scores, "decision_correct": correct, "comment": comment or None}
+            r = api_call("POST", f"/cases/{picked}/qa-label", json=body)
+            (st.success if r.status_code == 201 else st.error)(
+                "Label saved." if r.status_code == 201 else f"API refused ({r.status_code}): {r.json().get('detail')}")
+
+
+def api_mode() -> None:
+    try:
+        me = api_call("GET", "/me")
+    except Exception as e:  # noqa: BLE001 - API down or no token: say how to fix it
+        st.error(f"Sentinel API not reachable at {settings.api_url} ({type(e).__name__}: {e}). Start it with "
+                 "`docker compose up -d api` (or `sentinel api`), and check the Cognito settings in .env.")
+        st.stop()
+    if me.status_code != 200:
+        st.error(f"Sign-in failed ({me.status_code}): {me.json().get('detail')}")
+        st.stop()
+    case_tab, queue_tab, stream_tab, qa_tab = st.tabs(["Case", "Work queue", "Event stream", "QA review"])
+    with queue_tab:
+        rows = [{**r, "typology": "", "updated": str(r["updated_at"])[11:19]}
+                for r in api_call("GET", "/cases").json() if r["status"] != "new"]
+        render_queue(rows, "api-queue", "From GET /cases.")
+    with stream_tab:
+        render_stream(api_call("GET", f"/cases/{state.case}/events").json() if api_case(state.case) else [],
+                      f"Events of {state.case} from GET /cases/{{id}}/events.")
+    with qa_tab:
+        render_qa_review()
+    with case_tab:
+        api_case_view(state.case)
+
+
 # --- Page ---------------------------------------------------------------------------------------
 def select_case() -> None:
     state.case = state.case_labels[state.case_choice]
 
 
 with st.sidebar:
-    mode = st.radio("Mode", [DIRECT, KAFKA], help="Kafka mode needs the Docker stack and `sentinel worker all`")
+    mode = st.radio("Mode", [DIRECT, KAFKA, API], help="Kafka and API modes need the Docker stack and "
+                                                        "`sentinel worker all`; API mode also the `api` service")
+    if mode == API:
+        st.selectbox("Signed in as", list(API_ROLES), format_func=lambda r: f"{API_ROLES[r]} ({r})", index=1,
+                     key="api_role", help=f"Test users in {'Cognito' if settings.auth_mode == 'cognito' else 'dev mode'}"
+                                          "; the role decides what the API lets you do and see")
     st.toggle("Show customer data", value=True, key="show_pii",
               help="Agents only ever see PII as tokens such as <PERSON_3fa91c>. Switch off to see exactly what "
                    "the models saw.")
@@ -892,6 +1083,19 @@ with st.sidebar:
     if mode == DIRECT:
         if st.button("▶ Run investigation", type="primary", width="stretch"):
             state.case, run_now = alert["case_id"], True
+    elif mode == API:
+        if st.button("📨 Submit alert via API", type="primary", width="stretch"):
+            resp = api_call("POST", "/cases", json=alert)
+            state.case = alert["case_id"]
+            if resp.status_code == 202:
+                state.setdefault("api_pending", {})[alert["case_id"]] = "alert"
+                mark_published(alert["case_id"])
+                st.toast(f"POST /cases accepted {alert['case_id']}")
+            else:
+                state["api_flash"] = f"API refused ({resp.status_code}): {resp.json().get('detail')}"
+        if st.button("Open this case", width="stretch"):
+            state.case = alert["case_id"]
+        st.caption(f"API `{settings.api_url}` · the worker (`sentinel worker all`) runs the agents.")
     else:
         if st.button("📨 Publish alert to Kafka", type="primary", width="stretch"):
             publish_alert(alert)
@@ -912,6 +1116,8 @@ with st.sidebar:
 header(mode)
 if mode == DIRECT:
     direct_mode(alert, run_now)
+elif mode == API:
+    api_mode()
 else:
     kafka_mode()
 st.markdown('<div class="sn-footer">Synthetic data only · agents recommend, investigators decide · '

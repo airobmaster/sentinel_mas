@@ -1,12 +1,14 @@
 """Runtime settings. Override any field with an env var (prefix SENTINEL_) or a .env file,
 e.g. SENTINEL_MODEL_TXN=deepseek.v3-v1:0. See .env.example for the Docker-backed setup."""
 
+import os
 from pathlib import Path
 from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+# The source checkout; containers that install the package point SENTINEL_HOME at mounted data/ and evals/
+REPO_ROOT = Path(os.environ.get("SENTINEL_HOME") or Path(__file__).resolve().parents[2])
 MCP_TOKEN_AUDIENCE = "sentinel-mcp"
 
 
@@ -86,6 +88,18 @@ class Settings(BaseSettings):
     presidio_url: str | None = "http://localhost:5002"  # Presidio analyzer service (en_core_web_lg)
     pii_score_threshold: float = 0.7
     pii_token_key: str = "dev-only-pii-token-key"  # HMAC key so tokens cannot be reversed by guessing
+
+    # API (TDD §12). Auth "dev": HS256 tokens signed with api_dev_secret (offline tests, CI, no AWS);
+    # "cognito": access tokens from the Cognito user pool (infra/terraform/identity).
+    api_url: str = "http://localhost:8000"
+    auth_mode: Literal["dev", "cognito"] = "dev"
+    api_dev_secret: str = "dev-only-api-signing-key-not-for-production"
+    cognito_user_pool_id: str | None = None
+    cognito_tools_client_id: str | None = None  # console, CLI, tests: username + password sign-in
+    cognito_workbench_client_id: str | None = None  # React workbench: hosted sign-in page
+    cognito_domain: str | None = None
+    cognito_test_users: dict[str, str] = {}  # username -> password, written to .env by `sentinel auth bootstrap`
+    pii_roles: list[str] = ["l1", "l2", "admin"]  # FR-109: roles that see customer data unmasked
 
 
 settings = Settings()

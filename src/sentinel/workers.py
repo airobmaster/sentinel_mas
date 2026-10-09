@@ -47,15 +47,16 @@ async def stream(graph, payload, config: dict, case_id: str, publish: Publish) -
 async def report_pause(graph, config: dict, case_id: str, publish: Publish, cases) -> str:
     """After a run or resume: record where the case is waiting (approval or disposition)."""
     snapshot = await graph.aget_state(config)
+    tier = snapshot.values.get("tier")  # recorded for the work queue and the L1/L2 rule (BR-08)
     if snapshot.next == ("approve_info_request",):
         draft = snapshot.interrupts[0].value["draft"]
-        await cases.set_status(case_id, "awaiting_approval")
+        await cases.set_status(case_id, "awaiting_approval", tier=tier)
         await publish(CaseEvent(case_id=case_id, type="awaiting_approval",
                                 data={"questions": len(draft["questions"]), "rail_passed": draft["rail"]["passed"]}))
         return "awaiting_approval"
     if snapshot.next == ("human_review",):
         packet = snapshot.interrupts[0].value
-        await cases.set_status(case_id, "awaiting_review")
+        await cases.set_status(case_id, "awaiting_review", tier=tier)
         await publish(CaseEvent(
             case_id=case_id, type="awaiting_review",
             data={"recommendation": packet["recommendation"], "reason_code": packet["reason_code"],
@@ -66,11 +67,28 @@ async def report_pause(graph, config: dict, case_id: str, publish: Publish, case
     raise RuntimeError(f"run for {case_id} stopped at {snapshot.next} instead of a human step")
 
 
+def stopped_midway(snapshot) -> bool:
+    """A run that has started but neither paused for a human nor finished: a step failed after its
+    retries, or the worker died. Redelivery of its message resumes it from the last checkpoint."""
+    return bool(snapshot.values and snapshot.next and not snapshot.interrupts)
+
+
+async def resume(graph, snapshot, config: dict, case_id: str, publish: Publish, cases) -> str:
+    await publish(CaseEvent(case_id=case_id, type="case_resumed",
+                            detail=f"resuming from the last checkpoint at {', '.join(snapshot.next)}"))
+    await cases.set_status(case_id, "in_progress")
+    await stream(graph, None, config, case_id, publish)
+    return await report_pause(graph, config, case_id, publish, cases)
+
+
 async def handle_alert(graph, raw: str, publish: Publish, cases) -> str:
     """Process one alert message; returns the resulting case status."""
     alert = AlertEvent.model_validate_json(raw).model_dump(exclude_none=True)
     case_id, config = alert["case_id"], run_config(alert["case_id"])
-    if (await graph.aget_state(config)).values:
+    snapshot = await graph.aget_state(config)
+    if stopped_midway(snapshot):
+        return await resume(graph, snapshot, config, case_id, publish, cases)
+    if snapshot.values:
         await publish(CaseEvent(case_id=case_id, type="duplicate_ignored", detail="case already started"))
         return "duplicate"
     await cases.start(alert)
@@ -121,7 +139,10 @@ async def handle_followup(graph, raw: str, publish: Publish, cases) -> str:
     state = follow_up_state(prior, prior_thread, reply.reply_text, reply.received_at)
     thread = follow_up_thread(case_id, state)
     config = run_config(thread)
-    if (await graph.aget_state(config)).values:
+    snapshot = await graph.aget_state(config)
+    if stopped_midway(snapshot):
+        return await resume(graph, snapshot, config, case_id, publish, cases)
+    if snapshot.values:
         await publish(CaseEvent(case_id=case_id, type="duplicate_ignored", detail=f"{thread} already started"))
         return "duplicate"
     await cases.save_reply(case_id, state["follow_up"]["round"], reply.reply_text, reply.received_at)

@@ -2,6 +2,10 @@
 narrative (Claude Haiku 4.5 by default). The critic only runs when the code checks pass, so a draft
 with broken citations is reworked without spending a model call on it."""
 
+import logging
+
+from botocore.exceptions import BotoCoreError, ClientError
+
 from sentinel.agents.briefs import brief_for
 from sentinel.agents.factory import get_specialist, run_specialist
 from sentinel.config import settings
@@ -10,6 +14,7 @@ from sentinel.guards.citations import check_citations, check_completeness
 from sentinel.schemas import QAReport
 from sentinel.state import CaseState, QAIssue
 
+log = logging.getLogger("sentinel.qa")
 SEVERITY_ORDER = ("blocker", "major", "minor")
 REWORK_SEVERITIES = ("blocker", "major")
 
@@ -47,7 +52,16 @@ async def qa(state: CaseState) -> dict:
         update["budget_exceeded"] = True
         update["security_events"] = [record("budget_exceeded", "qa", f"{tokens:,} tokens used", tokens=tokens)]
     elif settings.qa_llm_critic and not any(i["severity"] in REWORK_SEVERITIES for i in issues):
-        critic_issues, update = await critic(state)
+        try:
+            critic_issues, update = await critic(state)
+        except (ClientError, BotoCoreError) as e:  # model unavailable after its retries: degrade, do not fail the case
+            log.warning("QA critic unavailable: %s", e)
+            reason = f"{type(e).__name__}: {str(e)[:160]}"
+            critic_issues = [{"target_agent": "narrative", "severity": "minor",
+                              "description": "[critic unavailable] The independent QA review could not run "
+                                             f"({reason}); only the code checks were applied. Review with extra care."}]
+            update = {"findings": {"qa": {"passed": None, "checks": {}, "model": settings.model_qa, "issues": 0,
+                                          "error": reason}}}
         issues += critic_issues
     return {
         **update,

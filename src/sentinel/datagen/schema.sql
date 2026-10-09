@@ -101,7 +101,16 @@ CREATE TABLE cases.alerts (
     expected     jsonb,                                  -- ground truth for evaluation; never shown to agents
     status       text NOT NULL DEFAULT 'new',
     thread_id    text,                                   -- current run: case_id, or case_id:rN after a follow-up
+    tier         text,                                   -- lane (fast/full) once triage has run
     updated_at   timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE cases.qa_labels (                          -- UC-05: QA reviewers' rubric scores
+    case_id     text NOT NULL REFERENCES cases.alerts ON DELETE CASCADE,
+    reviewer    text NOT NULL,
+    label       jsonb NOT NULL,
+    labelled_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (case_id, reviewer)
 );
 
 CREATE TABLE cases.customer_replies (                   -- UC-04
