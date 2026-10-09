@@ -66,7 +66,8 @@ def describe_update(node: str, out: dict | None) -> list[str]:
     if node == "qa":
         issues = out["qa_issues"]
         critic = findings.get("qa")
-        verdict = (f"critic {'passed' if critic['passed'] else 'failed'}" if critic else "code checks only")
+        verdict = (("critic unavailable" if critic.get("error") else f"critic {'passed' if critic['passed'] else 'failed'}")
+                   if critic else "code checks only")
         if not issues:
             status = "PASS"
         elif out["rework_target"]:
@@ -193,7 +194,7 @@ def print_eval(report: dict) -> None:
         mark = "ok" if got in r["acceptable"] else "MISS"
         cites = "-" if "error" in r else ("ok" if r["bad_citations"] == 0 else str(r["bad_citations"]))
         print(f"{r['case_id']:<12} {r['typology']:<22} {r['expected']:<9} {got:<9}{mark:>4} "
-              f"{r.get('tier') or '-':<5} {cites:<6} {r['seconds']}")
+              f"{r.get('tier') or '-':<5} {cites:<6} {r.get('seconds', '-')}")
         if "error" in r:
             print(f"             {r['error']}")
         for issue in r.get("issues", []):
@@ -309,6 +310,35 @@ async def run_workers(kind: str, concurrency: int) -> None:
         await run_worker(graph, cases, HANDLERS[kind], concurrency)
 
 
+def replay(args) -> int:
+    """The Airflow alert_replay steps. Each prints its result; `select` prints the case list last,
+    so Airflow passes it to the next task."""
+    from sentinel.evaluate import score_cases, select_cases
+    from sentinel.persistence import reset_case, wait_for_cases
+
+    if args.replay_command in ("select", "run"):
+        cases = select_cases(args.split, args.n)
+        if args.replay_command == "select":
+            print(",".join(cases))
+            return 0
+    else:
+        cases = [c for c in args.cases.split(",") if c]
+    if args.replay_command in ("publish", "run"):
+        for case_id in cases:
+            reset_case(case_id)
+        asyncio.run(kafka_publish([data.get_alert(c) for c in cases]))
+    if args.replay_command in ("wait", "run"):
+        statuses = wait_for_cases(cases, args.timeout)
+        print(json.dumps(statuses))
+        if missing := [c for c in cases if statuses.get(c) not in ("awaiting_review", "awaiting_approval")]:
+            print(f"not at human review: {missing}")
+            if args.replay_command == "wait":
+                return 1
+    if args.replay_command in ("score", "run"):
+        print_eval(score_cases(cases, "kafka", getattr(args, "split", None)))
+    return 0
+
+
 def main() -> None:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     if sys.platform == "win32":  # psycopg's async driver cannot use the default Proactor loop on Windows
@@ -329,6 +359,30 @@ def main() -> None:
                                      "(recreates the data tables and clears case runs)")
     data_sub.add_parser("kb", help="Embed the policy documents into the pgvector knowledge base")
     data_sub.add_parser("graph", help="Load the customer network into Neo4j and compute scores (GDS)")
+    data_sub.add_parser("lists", help="Refresh the sanctions and PEP lists (one transaction)")
+    golden_p = data_sub.add_parser("golden", help="Write the golden set: dev / held-out split of the alerts")
+    golden_p.add_argument("--holdout", type=int, default=20)
+    golden_p.add_argument("--seed", type=int, default=7)
+
+    replay_p = sub.add_parser("replay", help="Golden-set replay through Kafka, scored from the checkpoints "
+                                             "(the steps of the Airflow alert_replay DAG)")
+    replay_sub = replay_p.add_subparsers(dest="replay_command", required=True)
+    sel_p = replay_sub.add_parser("select", help="Print a typology-balanced pick of golden cases (comma-separated)")
+    sel_p.add_argument("--split", choices=["dev", "holdout", "all"], default="dev")
+    sel_p.add_argument("--n", type=int, help="Number of cases (default: the whole split)")
+    for name, help_text in (("publish", "Reset the cases and publish their alerts to Kafka"),
+                            ("wait", "Wait until the cases pause for a human"),
+                            ("score", "Score the cases against ground truth")):
+        p = replay_sub.add_parser(name, help=help_text)
+        p.add_argument("cases", help="Comma-separated case IDs")
+        if name == "wait":
+            p.add_argument("--timeout", type=float, default=7200)
+        if name == "score":
+            p.add_argument("--split")
+    run_r = replay_sub.add_parser("run", help="select + publish + wait + score in one go")
+    run_r.add_argument("--split", choices=["dev", "holdout", "all"], default="dev")
+    run_r.add_argument("--n", type=int)
+    run_r.add_argument("--timeout", type=float, default=7200)
 
     eval_p = sub.add_parser("eval", help="Run alerts with ground truth up to human review and score them")
     eval_p.add_argument("--n", type=int, default=20, help="Number of cases (stratified across typologies)")
@@ -361,6 +415,17 @@ def main() -> None:
 
     redteam_p = sub.add_parser("redteam", help="Red-team probe: forged forbidden tool calls must be denied by OPA and logged")
     redteam_p.add_argument("--case", default="CASE-0001")
+
+    api_p = sub.add_parser("api", help="Run the Sentinel API (http://localhost:8000/docs)")
+    api_p.add_argument("--host", default="127.0.0.1")
+    api_p.add_argument("--port", type=int, default=8000)
+
+    auth_p = sub.add_parser("auth", help="API users and tokens (Cognito or dev)")
+    auth_sub = auth_p.add_subparsers(dest="auth_command", required=True)
+    boot_p = auth_sub.add_parser("bootstrap", help="Create the test users (one per role) in Cognito")
+    boot_p.add_argument("--reset", action="store_true", help="Give existing users new passwords")
+    token_p = auth_sub.add_parser("token", help="Print an access token for a role's test user")
+    token_p.add_argument("role", choices=["l1", "l2", "qa", "sme", "admin"])
 
     worker_p = sub.add_parser("worker", help="Run Kafka workers (agents on Bedrock, state in Postgres)")
     worker_p.add_argument("kind", choices=["alerts", "decisions", "followups", "all"], nargs="?", default="all")
@@ -397,6 +462,17 @@ def main() -> None:
         if not settings.neo4j_uri:
             parser.error("set SENTINEL_NEO4J_URI (and user/password) in .env")
         print(f"Loaded the customer network into Neo4j: {json.dumps(load_graph())}")
+    elif args.command == "data" and args.data_command == "lists":
+        from sentinel.datagen.loader import refresh_lists
+
+        print(f"Refreshed the screening lists: {json.dumps(refresh_lists(settings.dataset_paths, settings.pg_dsn))}")
+    elif args.command == "data" and args.data_command == "golden":
+        from sentinel.evaluate import GOLDEN_PATH, make_golden
+
+        golden = make_golden(args.holdout, args.seed)
+        print(f"Wrote {GOLDEN_PATH}: {len(golden['dev'])} dev, {len(golden['holdout'])} held out")
+    elif args.command == "replay":
+        sys.exit(replay(args))
     elif args.command == "eval":
         from sentinel.evaluate import evaluate
 
@@ -433,6 +509,21 @@ def main() -> None:
             asyncio.run(kafka_tail(set(args.cases), args.from_beginning))
         except KeyboardInterrupt:
             pass
+    elif args.command == "api":
+        import uvicorn
+
+        from sentinel.api.app import create_app
+
+        server = uvicorn.Server(uvicorn.Config(create_app(), host=args.host, port=args.port, loop="none"))
+        asyncio.run(server.serve())  # this event loop (selector on Windows, for psycopg)
+    elif args.command == "auth" and args.auth_command == "bootstrap":
+        from sentinel.api.users import bootstrap
+
+        print("\n".join(bootstrap(args.reset)) + "\npasswords written to .env (SENTINEL_COGNITO_TEST_USERS)")
+    elif args.command == "auth" and args.auth_command == "token":
+        from sentinel.api.auth import token_for
+
+        print(token_for(args.role))
     elif args.command == "worker":
         import logging
 

@@ -23,6 +23,27 @@ CONNECTION_KWARGS = {"autocommit": True, "prepare_threshold": 0, "row_factory": 
 STATUS_AFTER_DECISION = {"close": "closed", "escalate": "escalated", "request_info": "info_requested"}
 OPEN_STATUSES = ("new", "in_progress", "awaiting_approval", "awaiting_review")
 
+# Idempotent additions to schema.sql, so a database loaded before they existed keeps working
+MIGRATIONS = (
+    "ALTER TABLE cases.alerts ADD COLUMN IF NOT EXISTS tier text",
+    """CREATE TABLE IF NOT EXISTS cases.qa_labels (
+           case_id     text NOT NULL REFERENCES cases.alerts ON DELETE CASCADE,
+           reviewer    text NOT NULL,
+           label       jsonb NOT NULL,
+           labelled_at timestamptz NOT NULL DEFAULT now(),
+           PRIMARY KEY (case_id, reviewer))""",
+    # Evaluation runs (sentinel eval, Airflow alert_replay); kept outside the reloadable data schemas
+    "CREATE SCHEMA IF NOT EXISTS evals",
+    """CREATE TABLE IF NOT EXISTS evals.runs (
+           run_id     text PRIMARY KEY,
+           created_at timestamptz NOT NULL,
+           source     text NOT NULL,
+           split      text,
+           metrics    jsonb NOT NULL,
+           cases      jsonb NOT NULL)""",
+)
+WAIT_DONE = ("awaiting_review", "awaiting_approval", "error", *STATUS_AFTER_DECISION.values())
+
 
 class CaseStore:
     def __init__(self, pool: AsyncConnectionPool):
@@ -52,10 +73,58 @@ class CaseStore:
                 "INSERT INTO cases.customer_replies (case_id, round, reply_text, received_at) VALUES (%s, %s, %s, %s) "
                 "ON CONFLICT (case_id, round) DO NOTHING", (case_id, round_no, reply_text, received_at))
 
-    async def set_status(self, case_id: str, status: str) -> None:
+    async def set_status(self, case_id: str, status: str, tier: str | None = None) -> None:
         async with self.pool.connection() as conn:
-            await conn.execute("UPDATE cases.alerts SET status = %s, updated_at = now() WHERE case_id = %s",
-                               (status, case_id))
+            await conn.execute("UPDATE cases.alerts SET status = %s, tier = COALESCE(%s, tier), updated_at = now() "
+                               "WHERE case_id = %s", (status, tier, case_id))
+
+    async def get(self, case_id: str) -> dict | None:
+        """The case-management record (status, lane, current thread, alert)."""
+        async with self.pool.connection() as conn:
+            return await (await conn.execute(
+                "SELECT case_id, status, tier, legal_entity, customer_id, thread_id, alert, updated_at "
+                "FROM cases.alerts WHERE case_id = %s", (case_id,))).fetchone()
+
+    async def queue(self, statuses: list[str] | None = None, tier: str | None = None,
+                   legal_entity: str | None = None, limit: int = 200) -> list[dict]:
+        """The work queue, most recently updated first (FR-100 filters)."""
+        sql = ("SELECT case_id, status, tier, legal_entity, customer_id, alert->>'scenario_name' AS scenario, "
+               "updated_at FROM cases.alerts WHERE true")
+        params: list = []
+        if statuses:
+            sql += " AND status = ANY(%s)"
+            params.append(statuses)
+        if tier:
+            sql += " AND tier = %s"
+            params.append(tier)
+        if legal_entity:
+            sql += " AND legal_entity = %s"
+            params.append(legal_entity)
+        async with self.pool.connection() as conn:
+            return await (await conn.execute(sql + " ORDER BY updated_at DESC, case_id LIMIT %s",
+                                             (*params, limit))).fetchall()
+
+    async def qa_sample(self, reviewer: str, n: int) -> list[dict]:
+        """UC-05: random decided cases this reviewer has not labelled yet."""
+        async with self.pool.connection() as conn:
+            return await (await conn.execute(
+                "SELECT case_id, status, tier, legal_entity, alert->>'scenario_name' AS scenario FROM cases.alerts a "
+                "WHERE status = ANY(%s) AND NOT EXISTS (SELECT 1 FROM cases.qa_labels l "
+                "WHERE l.case_id = a.case_id AND l.reviewer = %s) ORDER BY random() LIMIT %s",
+                (list(STATUS_AFTER_DECISION.values()), reviewer, n))).fetchall()
+
+    async def save_label(self, case_id: str, reviewer: str, label: dict) -> None:
+        async with self.pool.connection() as conn:
+            await conn.execute(
+                "INSERT INTO cases.qa_labels (case_id, reviewer, label) VALUES (%s, %s, %s) "
+                "ON CONFLICT (case_id, reviewer) DO UPDATE SET label = EXCLUDED.label, labelled_at = now()",
+                (case_id, reviewer, Jsonb(label)))
+
+    async def labels(self, case_id: str) -> list[dict]:
+        async with self.pool.connection() as conn:
+            return await (await conn.execute(
+                "SELECT reviewer, label, labelled_at FROM cases.qa_labels WHERE case_id = %s ORDER BY labelled_at",
+                (case_id,))).fetchall()
 
     async def status(self, case_id: str) -> str | None:
         async with self.pool.connection() as conn:
@@ -69,6 +138,8 @@ async def durable_state():
     async with AsyncConnectionPool(settings.pg_dsn, max_size=10, open=False, kwargs=CONNECTION_KWARGS) as pool:
         async with pool.connection() as conn:
             await conn.execute(f"CREATE SCHEMA IF NOT EXISTS {CHECKPOINT_SCHEMA}")
+            for statement in MIGRATIONS:
+                await conn.execute(statement)
         checkpointer = AsyncPostgresSaver(pool)
         await checkpointer.setup()
         yield checkpointer, CaseStore(pool)
@@ -107,6 +178,36 @@ def case_thread(case_id: str) -> str:
     with psycopg.connect(settings.pg_dsn, **CONNECTION_KWARGS) as conn:
         row = conn.execute("SELECT thread_id FROM cases.alerts WHERE case_id = %s", (case_id,)).fetchone()
     return (row or {}).get("thread_id") or case_id
+
+
+def migrate() -> None:
+    with psycopg.connect(settings.pg_dsn, **CONNECTION_KWARGS) as conn:
+        for statement in MIGRATIONS:
+            conn.execute(statement)
+
+
+def save_eval_run(report: dict) -> None:
+    migrate()
+    with psycopg.connect(settings.pg_dsn, **CONNECTION_KWARGS) as conn:
+        conn.execute("INSERT INTO evals.runs (run_id, created_at, source, split, metrics, cases) "
+                     "VALUES (%s, %s, %s, %s, %s, %s)",
+                     (report["run_id"], report["created_at"], report["source"], report.get("split"),
+                      Jsonb(report["metrics"]), Jsonb(report["cases"])))
+
+
+def wait_for_cases(case_ids: list[str], timeout: float, poll: float = 15) -> dict[str, str]:
+    """Block until every case has paused for a human (or failed); returns case -> status."""
+    import time
+
+    deadline = time.time() + timeout
+    while True:
+        with psycopg.connect(settings.pg_dsn, **CONNECTION_KWARGS) as conn:
+            rows = conn.execute("SELECT case_id, status FROM cases.alerts WHERE case_id = ANY(%s)",
+                                (case_ids,)).fetchall()
+        statuses = {r["case_id"]: r["status"] for r in rows}
+        if all(statuses.get(c) in WAIT_DONE for c in case_ids) or time.time() > deadline:
+            return statuses
+        time.sleep(poll)
 
 
 def reset_case(case_id: str) -> None:

@@ -132,6 +132,19 @@ class PiiVault:
                 text = text[:start] + self._tok("PERSON", text[start:end]) + text[end:]
         return text
 
+    def mask(self, obj):
+        """The reverse of restore: replace every value this vault knows with its token (FR-109, for roles
+        that may not see customer data). Covers raw tool evidence, which never went through redact()."""
+        if isinstance(obj, str):
+            for token, value in sorted(self.mapping.items(), key=lambda kv: -len(kv[1])):
+                obj = re.sub(rf"(?<![\w<]){re.escape(value)}(?!\w)", token, obj, flags=re.IGNORECASE)
+            return obj
+        if isinstance(obj, list):
+            return [self.mask(v) for v in obj]
+        if isinstance(obj, dict):
+            return {k: self.mask(v) for k, v in obj.items()}
+        return obj
+
     def restore(self, obj):
         """Swap tokens back to the original values in a string, list or dict (recursively)."""
         if isinstance(obj, str):

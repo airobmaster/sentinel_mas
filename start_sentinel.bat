@@ -105,7 +105,9 @@ if exist "%EDGE%" (
 )
 echo.
 echo Sentinel is running.
-echo   Console   %URL%   ^(choose "Kafka (full stack)" mode in the sidebar^)
+echo   Console   %URL%   ^(choose "Kafka" or "API" mode in the sidebar^)
+echo   API       http://localhost:8000/docs
+echo   Airflow   http://localhost:8088
 echo   Kafka UI  http://localhost:8080
 echo   Worker    "Sentinel worker" window
 exit /b 0

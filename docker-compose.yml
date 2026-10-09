@@ -1,8 +1,8 @@
-# Sentinel local stack: Postgres, Kafka (+ UI), OPA and the MCP tool servers.
+# Sentinel local stack: Postgres, Kafka (+ UI), OPA, Presidio, the MCP tool servers, the API and Airflow.
 #   docker compose up -d --build
 #   sentinel data generate && sentinel data load && sentinel kafka init
 #   sentinel worker all                                 (agents run on the host, see README)
-# Airflow, Neo4j and observability services are added in later slices.
+# Neo4j runs in Neo4j Desktop on the host; observability services come in a later slice.
 name: sentinel
 
 x-mcp-server: &mcp-server
@@ -125,6 +125,69 @@ services:
       AWS_REGION: ${SENTINEL_AWS_REGION:-eu-west-2}
     # Dev only: query embeddings use your local AWS login. On AWS the task role provides credentials.
     volumes: ["${USERPROFILE:-${HOME}}/.aws:/home/mcp/.aws"]
+
+  # Sentinel API (http://localhost:8000/docs). Reads Postgres and the checkpointer; publishes to Kafka.
+  # Auth: Cognito when SENTINEL_AUTH_MODE=cognito in .env (token checks need no AWS credentials), else dev tokens.
+  api:
+    build: { context: ., dockerfile: docker/sentinel.Dockerfile }
+    ports: ["8000:8000"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+    environment:
+      SENTINEL_PG_DSN: postgresql://sentinel:sentinel@postgres:5432/sentinel
+      SENTINEL_KAFKA_BOOTSTRAP: kafka:29092
+      SENTINEL_AWS_REGION: ${SENTINEL_AWS_REGION:-eu-west-2}
+      SENTINEL_AUTH_MODE: ${SENTINEL_AUTH_MODE:-dev}
+      SENTINEL_COGNITO_USER_POOL_ID: ${SENTINEL_COGNITO_USER_POOL_ID:-}
+      SENTINEL_COGNITO_TOOLS_CLIENT_ID: ${SENTINEL_COGNITO_TOOLS_CLIENT_ID:-}
+      SENTINEL_COGNITO_WORKBENCH_CLIENT_ID: ${SENTINEL_COGNITO_WORKBENCH_CLIENT_ID:-}
+      SENTINEL_API_DEV_SECRET: ${SENTINEL_API_DEV_SECRET:-dev-only-api-signing-key-not-for-production}
+
+  # Airflow 3 (http://localhost:8088): batch jobs in ingestion/airflow/dags. Metadata in the `airflow`
+  # database of the same Postgres, created once by airflow-db.
+  airflow-db:
+    image: pgvector/pgvector:pg16
+    depends_on:
+      postgres: { condition: service_healthy }
+    entrypoint: ["sh", "-c", "psql postgresql://sentinel:sentinel@postgres:5432/sentinel -tAc \"SELECT 1 FROM pg_database WHERE datname = 'airflow'\" | grep -q 1 || psql postgresql://sentinel:sentinel@postgres:5432/sentinel -c 'CREATE DATABASE airflow'"]
+    restart: "no"
+
+  airflow:
+    build: { context: ., dockerfile: docker/airflow.Dockerfile }
+    command: standalone
+    ports: ["8088:8080"]
+    depends_on:
+      airflow-db: { condition: service_completed_successfully }
+      kafka: { condition: service_healthy }
+    environment:
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://sentinel:sentinel@postgres:5432/airflow
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "True"  # local only: no Airflow login
+      # Sentinel CLI used by the tasks (data and evals mounted below)
+      SENTINEL_HOME: /opt/sentinel-home
+      SENTINEL_DATA_BACKEND: postgres
+      SENTINEL_PG_DSN: postgresql://sentinel:sentinel@postgres:5432/sentinel
+      SENTINEL_KAFKA_BOOTSTRAP: kafka:29092
+      SENTINEL_NEO4J_URI: ${SENTINEL_NEO4J_URI_DOCKER:-bolt://host.docker.internal:7687}
+      SENTINEL_NEO4J_USER: ${SENTINEL_NEO4J_USER:-neo4j}
+      SENTINEL_NEO4J_PASSWORD: ${SENTINEL_NEO4J_PASSWORD:-}
+      SENTINEL_AWS_REGION: ${SENTINEL_AWS_REGION:-eu-west-2}
+      AWS_REGION: ${SENTINEL_AWS_REGION:-eu-west-2}
+    volumes:
+      - ./ingestion/airflow/dags:/opt/airflow/dags
+      - ./data:/opt/sentinel-home/data:ro
+      - ./evals:/opt/sentinel-home/evals
+      # Dev only: policy_reembed uses your local AWS login. On AWS the task role provides credentials.
+      - ${USERPROFILE:-${HOME}}/.aws:/home/airflow/.aws
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8080/api/v2/monitor/health || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 15
+      start_period: 90s
+    restart: unless-stopped
 
 volumes:
   pgdata:

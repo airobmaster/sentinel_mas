@@ -78,11 +78,14 @@ Sentinel is being built in thin end-to-end slices, each tested before the next w
 - **Customer information requests and follow-ups:**
   - Sentinel drafts the request and checks it for tipping-off, and an investigator approves it.
   - The customer's reply starts a follow-up investigation on its own checkpointed thread.
+- **The Sentinel API** (FastAPI), the workbench's single entry point:
+  - work queue, review packet, audit history, live progress (server-sent events), decisions, approvals, customer replies and QA labels;
+  - sign-in with Amazon Cognito and role checks: L1 analysts decide only fast-lane cases, L2 investigators approve customer requests, QA reviewers label decided cases, and only investigator roles see customer data.
+- **Batch jobs in Airflow:** replaying golden-set alerts through Kafka and scoring the results, refreshing the sanctions and PEP lists, rebuilding the customer network graph, and re-embedding the policy manuals.
 - **Tests:** offline, integration (Docker stack) and live (Bedrock), plus a Streamlit test console for developers.
 
 **Planned**
-- Scheduled batch jobs (Airflow).
-- An API and the React investigator workbench.
+- The React investigator workbench.
 - Observability.
 - Deployment to AWS.
 
@@ -163,10 +166,12 @@ Each case is one run of a LangGraph `StateGraph`. The run is checkpointed, so it
 | Test console | Streamlit (developer tool only, not deployed) | In use |
 | Event streaming | Apache Kafka (KRaft) + Kafka UI: alerts in, decisions back, case events out, dead-letter queue; `aiokafka` workers; MSK IAM auth switch for AWS | In use |
 | Durable runs | LangGraph `AsyncPostgresSaver`: cases pause for days at human review and survive restarts | In use |
-| Scheduling | Apache Airflow (list refreshes, graph rebuilds, alert replay) | Planned |
+| Scheduling | Apache Airflow 3 (LocalExecutor, metadata in Postgres): alert replay, list refresh, graph rebuild, policy re-embedding | In use |
 | Documents | Docling for PDF/Word policy manuals (Markdown manuals are chunked directly today) | Planned |
 | Guardrails | Presidio analyzer (PII names) with pattern matching and reversible tokens; prompt-injection and tipping-off rails; LangChain call-limit middleware and a per-case token budget | In use |
-| API & UI | FastAPI service, React investigator workbench | Planned |
+| API | FastAPI with server-sent events and Prometheus metrics; Amazon Cognito sign-in (role groups) | In use |
+| Infrastructure as code | Terraform (Cognito user pool now; network, data and compute stacks with the AWS slice) | In use |
+| UI | React investigator workbench | Planned |
 | Evaluation tooling | DeepEval, Promptfoo, LangSmith experiments | Planned |
 | Observability | OpenTelemetry, Tempo, Prometheus, Grafana, LangSmith (development only) | Planned |
 | Cloud | AWS: ECS Fargate, MSK Serverless, Aurora Serverless v2, Bedrock | Planned |
@@ -225,7 +230,7 @@ sentinel run --case CASE-G0001          # any alert in the data backend
 streamlit run devtools/streamlit_app.py
 ```
 
-The test console has two modes with the same three views:
+The test console has three modes with the same three views:
 - **Case:** the review packet and the decision form.
 - **Work queue:** cases by status.
 - **Event stream:** case events.
@@ -249,6 +254,33 @@ The modes differ in where the case runs:
   - has buttons to re-send an alert or a decision, to show they are ignored safely.
 
   It needs `sentinel worker all` running.
+- **API (full stack):** does everything through the Sentinel API, signed in as a test user. A role switcher in the sidebar shows what each role may do and see, and a **QA review** tab lets a QA reviewer score decided cases. It needs the `api` service and the worker.
+
+### The API
+
+`docker compose up -d` starts the API at http://localhost:8000 (interactive docs at `/docs`). It reads case records from Postgres and case state from the checkpointer, and sends every change as a Kafka message for the workers to apply. It checks roles and business rules first, so a request that breaks them is refused straight away.
+
+| Endpoint | Purpose | Roles |
+|---|---|---|
+| `GET /cases`, `GET /cases/{id}` | work queue (filter by status, lane, entity) and review packet | any |
+| `GET /cases/{id}/history`, `/events`, `/stream` | checkpoint timeline, case events, live progress (server-sent events) | any |
+| `POST /cases` | start a case (publishes the alert) | L2, admin |
+| `POST /cases/{id}/decision` | close, escalate or request information | L1 (fast lane only), L2 |
+| `POST /cases/{id}/approval` | approve, edit or reject the drafted customer request | L2 |
+| `POST /cases/{id}/reply` | attach the customer's reply (starts the follow-up) | L1, L2, admin |
+| `GET /qa/sample`, `POST /cases/{id}/qa-label` | QA sampling and rubric scores | QA |
+| `GET /healthz`, `/readyz`, `/metrics` | health and Prometheus metrics | none |
+
+Sign-in uses Amazon Cognito. The user pool, role groups and app clients are created with Terraform:
+
+```bash
+cd infra/terraform/identity && terraform init && terraform apply
+terraform output -raw env        # paste into .env
+sentinel auth bootstrap          # one test user per role; passwords go only to .env
+sentinel auth token l2           # an access token for the L2 test user (e.g. for /docs)
+```
+
+Without Cognito (`SENTINEL_AUTH_MODE=dev`), the API accepts tokens signed with a local key. The offline tests use this mode.
 
 ### Run through Kafka (as in production)
 
@@ -291,7 +323,28 @@ This runs a sample of alerts, spread across every typology, up to the human-revi
 - **injections caught:** the share of cases with planted injection payloads where the rail fired, and whether their outcome stayed acceptable;
 - **mean tokens** per case.
 
-A JSON report is written to `evals/results/`.
+A JSON report is written to `evals/results/`, and on the full stack also to the `evals.runs` table.
+
+**Golden set.** `evals/datasets/golden.json` splits the 94 alerts with ground truth into 74 development cases and 20 held-out cases, balanced across typologies (`sentinel data golden` recreates it). Tune prompts on the development cases only; the held-out cases measure the result.
+
+**Replay through Kafka**, as in production: the alerts go to Kafka, the workers investigate them, and the results are scored from the saved case state.
+
+```bash
+sentinel replay run --split dev --n 10      # select, reset, publish, wait for review, score
+```
+
+### Batch jobs (Airflow)
+
+`docker compose up -d` also starts Airflow 3 at http://localhost:8088 (no login locally). Its DAGs (`ingestion/airflow/dags`) call the same `sentinel` commands:
+
+| DAG | Schedule | What it does |
+|---|---|---|
+| `alert_replay` | on demand (choose the split and number of cases) | the replay above: select → publish → wait for review → score |
+| `sanctions_refresh` | daily 05:00 | reloads the sanctions and PEP lists in one transaction (`sentinel data lists`) |
+| `graph_rebuild` | daily 05:30 | reloads the customer network into Neo4j and recomputes mule scores (`sentinel data graph`) |
+| `policy_reembed` | on demand | re-embeds the policy manuals with Bedrock (`sentinel data kb`) |
+
+New DAGs start paused; switch on the scheduled ones in the Airflow UI. `alert_replay` needs the worker running, because the worker runs the agents.
 
 ### Run the tests
 
@@ -327,11 +380,16 @@ src/sentinel/
 ├── kafka.py          # Kafka clients (local or MSK IAM), topics
 ├── workers.py        # alert, decision/approval and follow-up workers
 ├── persistence.py    # Postgres checkpointer and case status
-├── evaluate.py       # batch evaluation against ground truth
-└── cli.py            # `sentinel run | data | eval | kafka | worker | redteam`
+├── evaluate.py       # batch evaluation, golden set, scoring of Kafka replays
+├── api/              # FastAPI service: routes, Cognito/dev auth and roles, backend
+└── cli.py            # `sentinel run | data | eval | kafka | worker | redteam | api | auth`
 mcp_servers/          # FastMCP servers (case_mgmt, kyc_profile, txn_history, screening) + Dockerfile
 guardrails/opa/       # Rego policy, agent tool allow-list, policy tests
-docker-compose.yml    # local stack: Postgres, Kafka + UI, OPA, MCP servers
+docker-compose.yml    # local stack: Postgres, Kafka + UI, OPA, Presidio, MCP servers, API
+docker/               # images: Sentinel service (API; workers on AWS) and Airflow with Sentinel
+infra/terraform/      # AWS infrastructure: identity (Cognito)
+ingestion/airflow/dags/  # Airflow DAGs (batch jobs)
+evals/datasets/       # golden set (dev / held-out split)
 devtools/             # Streamlit test console (developer tool)
 data/fixtures/        # hand-written synthetic cases
 data/policies/        # versioned synthetic policy manuals (UK, ES) and the typology guide

@@ -50,7 +50,8 @@ def test_approval_then_request_info_then_customer_reply(stubbed_graph):
     assert any("Follow-up round 1" in i.value and "selling my car" in i.value for i in at.info)
     queue = next(df.value for df in at.dataframe if "status" in df.value.columns and "case" in df.value.columns)
     assert "awaiting_approval" in queue.iloc[0]["status"]  # the stubs ask for information again
-    stream = next(df.value for df in at.dataframe if "event" in df.value.columns and len(df.value) > 5)
+    # The Event stream tab keeps every run; the case's Trace tab shows only the follow-up run by default
+    stream = max((df.value for df in at.dataframe if "event" in df.value.columns), key=len)
     assert {"awaiting_approval", "approval_applied", "decision_applied", "follow_up_started"} <= set(stream["event"])
 
     # Security tab: metrics render; the probe explains that OPA is off in offline tests

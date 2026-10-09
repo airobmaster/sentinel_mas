@@ -85,7 +85,7 @@ def parse_resume(raw: str) -> DecisionEvent | ApprovalEvent:
 
 
 CaseEventType = Literal[
-    "case_started", "node_completed", "awaiting_approval", "approval_applied", "awaiting_review",
+    "case_started", "case_resumed", "node_completed", "awaiting_approval", "approval_applied", "awaiting_review",
     "decision_applied", "follow_up_started", "duplicate_ignored", "decision_ignored", "follow_up_ignored",
     "security_event", "error",
 ]

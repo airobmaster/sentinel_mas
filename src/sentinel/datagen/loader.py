@@ -30,17 +30,25 @@ COLUMN_NAMES = {"crm.notes": {"date": "created_at"}, "lake.transactions": {"date
                 "screening.sanctions_list": {"list": "list_name"}, "screening.pep_list": {"list": "list_name"}}
 
 
+SCREENING_LISTS = ("screening.sanctions_list", "screening.pep_list")
+
+
+def copy_rows(conn, table: str, rows: list[dict]) -> int:
+    key, fields = TABLES[table]
+    columns = [COLUMN_NAMES.get(table, {}).get(f, f) for f in fields]
+    with conn.cursor().copy(f"COPY {table} ({', '.join(columns)}) FROM STDIN") as copy:
+        for row in rows:
+            copy.write_row([row.get(f) for f in fields])
+    return len(rows)
+
+
 def load(paths: list[Path], dsn: str) -> dict[str, int]:
     data = merge_datasets(paths)
     counts = {}
     with psycopg.connect(dsn) as conn:
         conn.execute(SCHEMA_SQL.read_text(encoding="utf-8"))
-        for table, (key, fields) in TABLES.items():
-            columns = [COLUMN_NAMES.get(table, {}).get(f, f) for f in fields]
-            with conn.cursor().copy(f"COPY {table} ({', '.join(columns)}) FROM STDIN") as copy:
-                for row in data[key]:
-                    copy.write_row([row.get(f) for f in fields])
-            counts[table] = len(data[key])
+        for table, (key, _) in TABLES.items():
+            counts[table] = copy_rows(conn, table, data[key])
         with conn.cursor() as cur:
             cur.executemany(
                 "INSERT INTO cases.alerts (case_id, legal_entity, customer_id, alert, expected) VALUES (%s, %s, %s, %s, %s)",
@@ -50,3 +58,12 @@ def load(paths: list[Path], dsn: str) -> dict[str, int]:
             )
         counts["cases.alerts"] = len(data["alerts"])
     return counts
+
+
+def refresh_lists(paths: list[Path], dsn: str) -> dict[str, int]:
+    """Replace the sanctions and PEP lists in one transaction (Airflow `sanctions_refresh`): screening
+    never sees a half-loaded list. The synthetic dataset stands in for the OFSI/OFAC/PEP feeds."""
+    data = merge_datasets(paths)
+    with psycopg.connect(dsn) as conn:
+        conn.execute(f"TRUNCATE {', '.join(SCREENING_LISTS)}")
+        return {table: copy_rows(conn, table, data[TABLES[table][0]]) for table in SCREENING_LISTS}

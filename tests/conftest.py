@@ -32,6 +32,7 @@ def offline_settings(request, monkeypatch):
     monkeypatch.setattr(settings, "qa_llm_critic", False)
     monkeypatch.setattr(settings, "neo4j_uri", None)
     monkeypatch.setattr(settings, "presidio_url", None)  # pattern rules only: deterministic, no service
+    monkeypatch.setattr(settings, "auth_mode", "dev")  # API tokens signed locally, no Cognito
     reset_caches()
     yield
     reset_caches()
