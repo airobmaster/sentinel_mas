@@ -142,7 +142,25 @@ services:
       SENTINEL_COGNITO_USER_POOL_ID: ${SENTINEL_COGNITO_USER_POOL_ID:-}
       SENTINEL_COGNITO_TOOLS_CLIENT_ID: ${SENTINEL_COGNITO_TOOLS_CLIENT_ID:-}
       SENTINEL_COGNITO_WORKBENCH_CLIENT_ID: ${SENTINEL_COGNITO_WORKBENCH_CLIENT_ID:-}
+      SENTINEL_COGNITO_DOMAIN: ${SENTINEL_COGNITO_DOMAIN:-}
       SENTINEL_API_DEV_SECRET: ${SENTINEL_API_DEV_SECRET:-dev-only-api-signing-key-not-for-production}
+      SENTINEL_BLIND_MODE_PERCENT: ${SENTINEL_BLIND_MODE_PERCENT:-20}
+      # Local demo only: the workbench's role dropdown signs in as each test user (passwords from .env)
+      SENTINEL_DEMO_ROLE_SWITCH: ${SENTINEL_DEMO_ROLE_SWITCH:-true}
+      SENTINEL_COGNITO_TEST_USERS: ${SENTINEL_COGNITO_TEST_USERS:-{}}
+      # Network graph view: the same Neo4j as the agents (Neo4j Desktop on the host)
+      SENTINEL_DATA_BACKEND: postgres
+      SENTINEL_NEO4J_URI: ${SENTINEL_NEO4J_URI_DOCKER:-bolt://host.docker.internal:7687}
+      SENTINEL_NEO4J_USER: ${SENTINEL_NEO4J_USER:-neo4j}
+      SENTINEL_NEO4J_PASSWORD: ${SENTINEL_NEO4J_PASSWORD:-}
+
+  # Investigator workbench (http://localhost:5173, the sign-in callback registered with Cognito).
+  # For UI development stop it (docker compose stop workbench) and run `npm run dev` in ui/workbench.
+  workbench:
+    build: { context: ui/workbench, dockerfile: ../../docker/workbench.Dockerfile }
+    ports: ["5173:80"]
+    depends_on: [api]
+    restart: unless-stopped
 
   # Airflow 3 (http://localhost:8088): batch jobs in ingestion/airflow/dags. Metadata in the `airflow`
   # database of the same Postgres, created once by airflow-db.

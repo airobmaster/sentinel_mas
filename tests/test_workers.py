@@ -17,14 +17,19 @@ DECISION = json.dumps({"case_id": "CASE-0001", "action": "escalate", "reason_cod
 
 class FakeCases:
     def __init__(self):
-        self.status, self.threads, self.replies = {}, {}, {}
+        self.status, self.threads, self.replies, self.assigned = {}, {}, {}, {}
 
     async def start(self, alert, thread_id=None):
         self.status[alert["case_id"]] = "in_progress"
         self.threads[alert["case_id"]] = thread_id or alert["case_id"]
 
-    async def set_status(self, case_id, status, tier=None):
+    async def set_status(self, case_id, status, tier=None, assigned_role=None, qa_flagged=None):
         self.status[case_id] = status
+        if assigned_role:
+            self.assigned[case_id] = assigned_role
+
+    async def assign(self, case_id, role):
+        self.assigned[case_id] = role
 
     async def thread_for(self, case_id):
         return self.threads.get(case_id, case_id)
@@ -117,9 +122,20 @@ async def test_qa_degrades_when_the_critic_model_is_unavailable(monkeypatch):
 
 async def test_decision_resumes_once(env):
     await workers.handle_alert(env.graph, ALERT, env.publish, env.cases)
-    assert await workers.handle_decision(env.graph, DECISION, env.publish, env.cases) == "escalated"
-    assert env.cases.status["CASE-0001"] == "escalated" and types(env)[-1] == "decision_applied"
-    assert await workers.handle_decision(env.graph, DECISION, env.publish, env.cases) == "ignored"
+    assert env.cases.assigned["CASE-0001"] == "l1"  # fast lane: L1 first (BR-08)
+    # L1 escalates: the case waits again, now with L2 (BR-16)
+    assert await workers.handle_decision(env.graph, DECISION, env.publish, env.cases) == "awaiting_review"
+    assert env.cases.assigned["CASE-0001"] == "l2" and types(env)[-2:] == ["decision_applied", "awaiting_review"]
+    # L2 escalates: now with the MLRO, who files the SAR
+    assert await workers.handle_decision(env.graph, DECISION, env.publish, env.cases) == "awaiting_review"
+    assert env.cases.assigned["CASE-0001"] == "mlro"
+    assert await workers.handle_decision(env.graph, DECISION, env.publish, env.cases) == "ignored"  # not an MLRO action
+    assert "invalid decision" in env.events[-1].detail
+    sar = json.dumps({"case_id": "CASE-0001", "action": "file_sar", "reason_code": "SUSPICION_CONFIRMED",
+                      "investigator_id": "MLRO-1"})
+    assert await workers.handle_decision(env.graph, sar, env.publish, env.cases) == "sar_filed"
+    assert env.cases.status["CASE-0001"] == "sar_filed"
+    assert await workers.handle_decision(env.graph, sar, env.publish, env.cases) == "ignored"
     assert env.events[-1].detail == "case is not waiting for review"
 
 

@@ -106,6 +106,7 @@ if exist "%EDGE%" (
 echo.
 echo Sentinel is running.
 echo   Console   %URL%   ^(choose "Kafka" or "API" mode in the sidebar^)
+echo   Workbench http://localhost:5173   ^(sign in with a Cognito test user^)
 echo   API       http://localhost:8000/docs
 echo   Airflow   http://localhost:8088
 echo   Kafka UI  http://localhost:8080

@@ -4,7 +4,9 @@
                                               -> (fast lane) ----------> typology
     qa -> rework (once, for blocker/major issues)
        -> draft_info_request -> approve_info_request (UC-03, when the recommendation is request_info)
-       -> human_review -> END
+       -> human_review (L1 for the fast lane, L2 for the full lane: BR-08)
+            -- escalate --> l2_review (from L1) -- escalate --> mlro_review (file a SAR or not) -> END
+            -- close / request info --> END
 """
 
 from langgraph.checkpoint.memory import InMemorySaver
@@ -22,7 +24,8 @@ from sentinel.agents.txn import txn
 from sentinel.agents.typology import typology
 from sentinel.config import settings
 from sentinel.guards.citations import FAST_LANE_SPECIALISTS
-from sentinel.hitl import approve_info_request, human_review, recommendation_of
+from sentinel.hitl import (approve_info_request, human_review, l2_review, mlro_review, recommendation_of,
+                           route_after_review)
 from sentinel.state import CaseState
 
 # A reworked specialist rejoins downstream of the join: a waiting join would never fire again.
@@ -66,7 +69,9 @@ def build_graph(nodes: dict | None = None) -> StateGraph:
     g.add_node("rework", rework, retry_policy=retry)
     g.add_node("draft_info_request", fns["draft_info_request"], retry_policy=retry)
     g.add_node("approve_info_request", approve_info_request)  # no retry: interrupt node (UC-03)
-    g.add_node("human_review", human_review)  # no retry: interrupt node
+    g.add_node("human_review", human_review)  # no retry: interrupt nodes (first review level, by lane)
+    g.add_node("l2_review", l2_review)  # after an L1 escalation
+    g.add_node("mlro_review", mlro_review)  # after an L2 escalation
 
     g.add_edge(START, "triage")
     for name in FAST_LANE_SPECIALISTS:
@@ -81,7 +86,9 @@ def build_graph(nodes: dict | None = None) -> StateGraph:
                             ["typology", "narrative", "qa"])
     g.add_edge("draft_info_request", "approve_info_request")
     g.add_edge("approve_info_request", "human_review")
-    g.add_edge("human_review", END)
+    g.add_conditional_edges("human_review", route_after_review, ["l2_review", "mlro_review", END])
+    g.add_conditional_edges("l2_review", route_after_review, ["mlro_review", END])
+    g.add_edge("mlro_review", END)
     return g
 
 
@@ -100,6 +107,7 @@ def initial_state(alert: dict) -> CaseState:
         "security_events": [],
         "usage": {},
         "pii_vault": {},
+        "decisions": [],
     }
 
 
@@ -121,6 +129,8 @@ def follow_up_state(prior: dict, prior_thread: str, reply_text: str, received_at
          "summary": f"Previous review of this alert: {prior_summary}"},
     ]
     state["pii_vault"] = dict(prior.get("pii_vault") or {})
+    if decision.get("level") in ("l1", "l2"):
+        state["review_level"] = decision["level"]  # the level that asked the customer reviews the reply
     state["follow_up"] = {"round": round_no, "prior_thread": prior_thread, "reply_id": reply_id,
                           "reply_text": reply_text, "received_at": received_at, "prior_ref": prior_ref,
                           "prior_summary": prior_summary,

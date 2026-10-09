@@ -51,7 +51,10 @@ NAME_PARTICLES = {"de", "del", "la", "las", "los", "da", "das", "do", "dos", "va
 
 
 def _is_name(span: str) -> bool:
-    """Presidio's English model also tags lower-case phrases (e.g. Spanish policy text); names are capitalised."""
+    """Presidio's English model also tags lower-case phrases (e.g. Spanish policy text) and short codes such as
+    country codes ("MM"); names are capitalised words."""
+    if re.fullmatch(r"[A-Z]{2,3}", span.strip()):
+        return False
     words = re.findall(r"[^\W\d_]+", span)
     return bool(words) and not NOT_A_PERSON.search(span) and all(
         w[0].isupper() for w in words if w.lower() not in NAME_PARTICLES)

@@ -36,7 +36,8 @@ Work proceeds as thin end-to-end slices (alert in → agents → human decision)
 | 5 | **Full squad**: Network agent (Neo4j + GDS, device-sharing mule rings), Typology & policy agent (versioned UK/ES manuals, Cohere Multilingual v3, hybrid pgvector search), independent LLM QA critic (Claude Haiku 4.5); lane routing; `graph_query` + `policy_kb` MCP servers; console Typology & Network tabs | **Done**: 87 offline + 17 integration tests; 24-case full-stack eval: escalation recall 1.0, false escalations 0.0, agreement 0.958 (acceptable 1.0), citation validity 1.0, 0 errors |
 | 6 | **Guardrails**: PII redaction (Presidio + patterns, reversible tokens), injection rail, call limits and token budget, security event log; **UC-08** red-team probe through OPA; **UC-03** customer request drafted with a tipping-off rail and an approval step; **UC-04** customer reply → follow-up run on `{case_id}:rN` via `aml.case-followups.v1`; console Security tab, approval and reply forms, PII toggle | **Done**: 108 offline + 16 integration tests; **Gate G4 passed**: 28-case full-stack eval (the Slice 5 sample + 4 cases with planted injections): escalation recall 1.0, false escalations 0.0, agreement 0.964 (acceptable 1.0), citation validity 1.0, injections caught 4/4 with acceptable outcomes, 0 errors, ~85k tokens per case; red-team 6/6 denied; live UC-03 → UC-04 over Kafka |
 | 7 | **Sentinel API** (FastAPI): queue, review packet with PII by role, checkpoint history, case events + SSE, decisions, approvals, customer replies, QA sampling/labels, health/readiness/metrics; **Amazon Cognito** sign-in (Terraform identity stack, 5 role groups, test users via `sentinel auth bootstrap`) with BR-08/09/10, UC-03 and UC-05 role rules; API container in Compose; console **API mode** with role switcher and QA review. Then **Airflow** (DAGs) | **API done**: 118 offline + 18 integration tests; live: alert via API → worker → SSE progress → L1 decision via API with a Cognito token. **Airflow done**: 4 DAGs load and run through the scheduler (lists, graph, policy re-embed live); golden set 74/20; worker resumes runs that stopped mid-way; QA degrades when the critic model is unavailable |
-| 8+ | Workbench, evals tooling, observability, AWS | |
+| 8 | **Investigator workbench** (`ui/workbench`): React 19 + TypeScript + Vite + Mantine; Cognito sign-in (PKCE); queue with SLA colours; case view with evidence chips, findings with time/usage, typology, network graph (Cytoscape), audit timeline, security; live progress (SSE); decision, approval and reply panels with role rules; QA labelling; blind review; nginx container proxying `/api`; Playwright E2E | **Done**: 4 Playwright tests green against the stack (Cognito sign-in, decide, approve → request info → reply, QA label); 125 offline tests; **Gate G5 passed** |
+| 9+ | Observability, evals tooling and CI, AWS | |
 
 ---
 
@@ -47,11 +48,11 @@ Work proceeds as thin end-to-end slices (alert in → agents → human decision)
 | Day 1 | Foundations, Kafka, Airflow, data | 17 | 8 | 47% | ~10.5 | G1 — |
 | Day 2 | MCP tools, OPA, Kafka + Airflow DAGs | 13 | 8 | 62% | ~10.0 | G2 — |
 | Day 3 | Core graph, HITL, Kafka workers | 15 | 12 | 80% | ~10.75 | G3 ✔ |
-| Day 4 | Full squad, guardrails, extended HITL | 14 | 13 | 93% | ~9.75 | G4 ✔ |
-| Day 5 | API & full workbench | 18 | 6 | 33% | ~12.0 | G5 — |
+| Day 4 | Full squad, guardrails, extended HITL | 14 | 14 | 100% | ~9.75 | G4 ✔ |
+| Day 5 | API & full workbench | 18 | 18 | 100% | ~12.0 | G5 ✔ |
 | Day 6 | Eval, observability, CI, AWS foundation | 14 | 0 | 0% | ~10.25 | G6 — |
 | Day 7 | AWS deploy, hardening, demo | 12 | 0 | 0% | ~9.75 | G7 — |
-| **Total** | | **103** | **47** | **46%** | **~73** | |
+| **Total** | | **103** | **60** | **58%** | **~73** | |
 
 ---
 
@@ -132,7 +133,7 @@ Work proceeds as thin end-to-end slices (alert in → agents → human decision)
 - [x] **D4-10** (M) UC-08: injected "close this alert" → OPA deny, logged and counted [DEMO 7] · ~0.5h ✔ Day 4 (Slice 6): `sentinel redteam` + console Security tab; 6/6 forged calls denied by the live OPA
 - [x] **D4-11** (M) UC-03: `HumanInTheLoopMiddleware` on `draft_customer_info_request` + tipping-off check (BR-11) [DEMO 4] · ~1h ✔ Day 4 (Slice 6): implemented as a main-graph step (`draft_info_request` → `approve_info_request` interrupt) instead of tool middleware; approve/edit/reject via console or Kafka
 - [x] **D4-12** (M) UC-04: `request_info` → customer reply → follow-up run on `{case_id}:r1` (FR-096, TDD §7.2) [DEMO 5] · ~1h ✔ Day 4 (Slice 6): replies on `aml.case-followups.v1`; reply + previous review as evidence; `cases.customer_replies`
-- [ ] **D4-13** `WIP` (M) Baseline golden run: 100 cases via `alert_replay` → Kafka; record recall/agreement/completeness · ~0.75h — pipeline ready (`alert_replay` / `sentinel replay run --split all`); full 94-case run pending (Bedrock cost and the QA critic model outage)
+- [x] **D4-13** (M) Baseline golden run: 100 cases via `alert_replay` → Kafka; record recall/agreement/completeness · ~0.75h ✔ Day 5: all 94 golden cases through Airflow `alert_replay` → Kafka → worker (scored from the checkpoints): escalation recall 0.947, false escalations 0.023, agreement 0.926, acceptable 0.968, citation validity 0.989, injections caught 4/4, 0 errors, ~102k tokens per case. Misses: 2 of 6 single-account MULE cases → request_info, 1 sanctions near-miss → escalate (pass-through pattern); report `eval-b38946`
 - [x] **D4-14** (M) **Gate G4:** 8 agents; BR-05 checklist passes; UC-03/04/08 work via CLI/API; baseline logged · ~0.25h
 
 ---
@@ -148,18 +149,18 @@ Work proceeds as thin end-to-end slices (alert in → agents → human decision)
 - [x] **D5-06** (M) QA sampling + labels endpoint (UC-05) · ~0.5h ✔ Day 5 (Slice 7): rubric of four 1–5 scores + decision-correct flag in `cases.qa_labels`
 
 **Workbench** [DEMO 6]
-- [ ] **D5-07** (M) React + TS + Vite scaffold, role switcher, shared layout · ~0.5h
-- [ ] **D5-08** (M) Queue view with status/lane/entity filters (FR-100) · ~0.75h
-- [ ] **D5-09** (M) Case view: overview, evidence pack, findings, narrative with evidence chips (FR-101) [DEMO 2] · ~1.5h
-- [ ] **D5-10** (M) Decision panel: action, reason code, agreement flag, edits (FR-091/092) [DEMO 2] · ~0.75h
-- [ ] **D5-11** (M) Live progress panel (SSE, or 2 s polling fallback) [DEMO 1] · ~0.5h
-- [ ] **D5-12** (M) Network graph view, Cytoscape.js (FR-104) · ~1h
-- [ ] **D5-13** (M) Audit timeline: checkpoint history + Tempo trace link (FR-105, UC-07) · ~0.75h
-- [ ] **D5-14** (M) Tool-approval dialog + request-info / customer-reply screen (FR-108, UC-03/04) [DEMO 4, 5] · ~0.75h
-- [ ] **D5-15** (M) QA labelling screen with rubric (FR-106) · ~0.5h
-- [ ] **D5-16** (S) Blind mode (FR-107) · ~0.25h
-- [ ] **D5-17** (M) Playwright E2E: decide, approve, request-info flows · ~0.75h
-- [ ] **D5-18** (M) **Gate G5:** demo items 1, 2, 4, 5, 6 work end to end in the browser (local) · ~0.25h
+- [x] **D5-07** (M) React + TS + Vite scaffold, role switcher, shared layout · ~0.5h ✔ Day 5 (Slice 8): `ui/workbench`, Mantine 9, Cognito hosted sign-in (authorization code + PKCE); "role switcher" = sign out / sign in as another test user (dev mode: role buttons)
+- [x] **D5-08** (M) Queue view with status/lane/entity filters (FR-100) · ~0.75h ✔ Day 5 (Slice 8): status/lane/entity filters, SLA colours (amber after 1 h, red after 8 h waiting), 5 s refresh
+- [x] **D5-09** (M) Case view: overview, evidence pack, findings, narrative with evidence chips (FR-101) [DEMO 2] · ~1.5h ✔ Day 5 (Slice 8): summary cards + Review / Evidence / Findings (time and usage table) / Typology / Network / Audit timeline / Security tabs; evidence chips open the evidence item
+- [x] **D5-10** (M) Decision panel: action, reason code, agreement flag, edits (FR-091/092) [DEMO 2] · ~0.75h ✔ Day 5 (Slice 8)
+- [x] **D5-11** (M) Live progress panel (SSE, or 2 s polling fallback) [DEMO 1] · ~0.5h ✔ Day 5 (Slice 8): SSE via fetch (bearer token), running clock, current run only
+- [x] **D5-12** (M) Network graph view, Cytoscape.js (FR-104) · ~1h ✔ Day 5 (Slice 8): `GET /cases/{id}/network` (same data as the console diagram)
+- [x] **D5-13** (M) Audit timeline: checkpoint history + Tempo trace link (FR-105, UC-07) · ~0.75h ✔ Day 5 (Slice 8): checkpoint timeline + case events; Tempo trace link comes with D6-07
+- [x] **D5-14** (M) Tool-approval dialog + request-info / customer-reply screen (FR-108, UC-03/04) [DEMO 4, 5] · ~0.75h ✔ Day 5 (Slice 8): approval panel (edit re-checked for tipping-off) and customer-reply panel
+- [x] **D5-15** (M) QA labelling screen with rubric (FR-106) · ~0.5h ✔ Day 5 (Slice 8)
+- [x] **D5-16** (S) Blind mode (FR-107) · ~0.25h ✔ Day 5 (Slice 8): deterministic 20% of cases (local), draft and recommendation hidden until decided; agreement still measured
+- [x] **D5-17** (M) Playwright E2E: decide, approve, request-info flows · ~0.75h ✔ Day 5 (Slice 8): 4 tests through real Cognito sign-in, API, Kafka and worker; test cases seeded with stubbed agents (fresh IDs per run)
+- [x] **D5-18** (M) **Gate G5:** demo items 1, 2, 4, 5, 6 work end to end in the browser (local) · ~0.25h ✔ Day 5 (Slice 8): Go
 
 ---
 
@@ -260,6 +261,7 @@ Work proceeds as thin end-to-end slices (alert in → agents → human decision)
 ---
 
 | Day 5 | D2-12, D4-13 | First `alert_replay` run: Bedrock returned `ServiceUnavailableException` for the QA critic (Claude Haiku 4.5, EU profile) on every retry. The worker's retry then saw the saved checkpoint, treated the alert as a duplicate and left 3 cases `in_progress` for good; the DAG failed at `wait_for_review` | Worker resumes a run that stopped mid-way from its last checkpoint (`case_resumed`) instead of ignoring it (also covers NFR-03 crash resume); QA degrades to code checks with a visible "critic unavailable" note when the critic model fails after its retries | Day 5 (fix); outage on AWS side |
+| Day 5 | D5-17 | Browser tests were flaky while the 94-case baseline ran: the worker took about a minute to apply a decision (Presidio lookups during PII redaction were blocking HTTP calls on the worker's shared event loop), and a follow-up started by an earlier test run (real agents) wrote into the next run's case | PII redaction runs off the event loop (`asyncio.to_thread`); test cases get fresh IDs per run; tests allow 2 minutes for the worker | Day 5 |
 
 ---
 
@@ -271,7 +273,7 @@ Work proceeds as thin end-to-end slices (alert in → agents → human decision)
 | G2 Tools & pipelines ready | Day 2 | | | |
 | G3 Streaming E2E MVP | Day 3 | **Go** (met on Day 2) | 10/10 cases reached review via Kafka; 100% valid citations; 10/10 recommendations correct; 10/10 decisions applied | Full stack (Postgres, MCP, OPA). Remaining Day 3 items (LLM lane upgrade, typology stub, LLM QA critic, model by lane) do not block the gate |
 | G4 Full squad + HITL flows | Day 4 | **Go** | 28 cases: recall 1.0, false escalations 0.0, agreement 0.964, acceptable 1.0, citation validity 1.0, injections caught 4/4, 0 errors | UC-03/04 live via Kafka CLI, UC-08 via `sentinel redteam` (API comes on Day 5). Two earlier runs were reworked after guardrail false positives (see Blockers) |
-| G5 Complete workbench | Day 5 | | E2E pass | |
+| G5 Complete workbench | Day 5 | **Go** | 4/4 Playwright E2E green in the browser against the full stack (decide; approve customer request; request info → customer reply → follow-up; QA label); live progress via SSE | Demo items 1, 2, 4, 5, 6 work locally; sign-in through the real Cognito hosted page |
 | G6 Gated release + AWS base | Day 6 | | eval scores, red-team pass rate | |
 | G7 Demo on AWS (v1.0) | Day 7 | | p95 latency, cost/case | |
 
@@ -285,7 +287,7 @@ Work proceeds as thin end-to-end slices (alert in → agents → human decision)
 | Day 2 | Slice 4: Kafka + UI, workers, Postgres checkpointer, persistent MCP sessions (D1-03, D2-11, D3-12–D3-15); Gate G3 passed | Airflow, Neo4j, observability, LangSmith; pre-commit/branch protection | One case ~49 s alone on the full stack (MCP overhead gone); ~75–125 s each with 5 in parallel, limited by Bedrock throughput |
 | Day 3 | Slice 5: full squad (D1-06, D1-11, D1-16, D2-06, D3-02, D3-08, D3-10, D3-11, D4-01–D4-03, D4-05, D4-06); 24-case baseline recorded | Guardrails, UC-03/04/08, Airflow | Mean ~134 s per case with 4 in parallel (two more agents + critic) |
 | Day 4 | Slice 6: guardrails and extended HITL (D4-07–D4-12, D1-13 payloads); Gate G4 | Airflow, API, workbench | Live: redteam 6/6 denied by OPA; CASE-G0039 drafted request (rail passed) → approved → request_info → customer reply → follow-up `:r1` cites the reply and escalates; mean ~160 s per case with 4 in parallel |
-| Day 5 | Slice 7: Sentinel API with Cognito sign-in (D5-01–D5-06) | Airflow DAGs, workbench | Cognito created with Terraform (first AWS resource beyond Bedrock); live API flow verified with real tokens |
+| Day 5 | Slice 7: Sentinel API with Cognito sign-in (D5-01–D5-06), Airflow and golden set (D1-04, D1-14, D2-12, D4-04); Slice 8: investigator workbench (D5-07–D5-18), Gate G5 | Observability, CI, AWS | Cognito created with Terraform (first AWS resource beyond Bedrock); live API flow verified with real tokens |
 | Day 6 | | | |
 | Day 7 | | | |
 
@@ -307,3 +309,5 @@ Work proceeds as thin end-to-end slices (alert in → agents → human decision)
 | v1.0 · Day 4 | Slice 6 as-built: UC-03 approval is a main-graph step (`draft_info_request` → `approve_info_request` interrupt) rather than `HumanInTheLoopMiddleware` on a tool; customer replies get their own topic `aml.case-followups.v1`; Presidio runs as a Docker service; PII tokens are reversible HMAC tokens kept in case state | Approval is checkpointed and resumable over Kafka like the decision, visible in the graph for auditors, and no agent holds a tool that contacts the customer | Rationale for UC-03 to be written up in the demo document; TDD §7 and §10 to be updated as-built (D7-11) |
 | v1.1 · Day 5 | Slice 7 as-built: API sign-in uses Amazon Cognito from the start (Terraform `infra/terraform/identity`, kept apart from the hourly-billed platform stack) instead of a local mock IdP, with an HS256 dev mode for offline tests and CI; roles l1, l2, qa, sme, admin as Cognito groups; approvals at `POST /cases/{id}/approval` (one pending interrupt per case, no interrupt ID); added `/cases/{id}/reply`, `/events`, `/me`, `/readyz` and QA endpoints; lane recorded in `cases.alerts.tier`; API container in Compose while the workers stay on the host | AWS deployment is close and Cognito is free at demo scale with nothing running; the workbench needs a real sign-in page (hosted login) | Aurora, MSK and ECS stay local until the AWS slice (hourly cost). TDD §12 to be updated as-built (D7-11). Deployed workbench needs an HTTPS callback URL (CloudFront or ACM certificate) |
 | v1.2 · Day 5 | Slice 7 Airflow as-built: one custom Airflow 3.3.2 image with Sentinel in a separate virtual environment; DAG tasks are `BashOperator`s calling the `sentinel` CLI (no Sentinel imports in Airflow's own environment); `alert_replay` scores from the Postgres checkpointer after the workers run (reports in `evals.runs`); golden set is 94 cases (74 dev / 20 held out) rather than 100; local Airflow has no login (`SIMPLE_AUTH_MANAGER_ALL_ADMINS`) | Avoids dependency clashes with Airflow's pins; the same commands run from a terminal; all alerts with ground truth are used | On AWS: Airflow on ECS (or MWAA in the backlog) with login; `nightly_eval` (D6-06) reuses `sentinel replay` |
+| v1.3 · Day 5 | Slice 8 as-built: Mantine as the component library; the workbench calls the API on its own origin under `/api` (Vite proxy in development, nginx in the container) instead of CORS; sign-in config served by the API (`/auth/config`), dev-mode sign-in only without Cognito; network graph data endpoint shared with the console diagram; blind review is a stable hash-based share of cases (20% locally); Playwright tests seed their cases with stubbed agents under fresh IDs per run; PII redaction moved off the worker's event loop | No CORS surface; one origin also on AWS (CloudFront/ALB path routing); deterministic, cheap browser tests that still exercise Cognito, API, Kafka and the worker | Tempo trace links added with D6-07; HTTPS origin needed on AWS for the Cognito callback |
+| v1.4 · Day 5 | Review levels inside Sentinel (owner's decision): first review by lane (BR-08), then L1 → L2 → MLRO escalation as separate checkpointed pauses (new BR-16); each level sees only its own cases (BR-17); new `mlro` role (Cognito group, test user) deciding file SAR / no SAR, so the MLRO is no longer outside Sentinel; QA queue = every case whose automated QA raised issues + a 10% sample of the rest (BR-18); case records carry `assigned_role` and `qa_flagged`; workbench restyled (red pastel palette), queue filters kept in the URL, demo role switch (local only) | The flow investigators and supervisors expect (four eyes, need-to-know); demo-friendly role switching | Functional Spec §1, UC-05, the state diagram and BR-16–BR-18 updated; HLD and TDD to be updated as-built (D7-11). Demo role switch must stay off on AWS |

@@ -24,7 +24,7 @@ from sentinel.config import settings
 from sentinel.events import (ALERTS_TOPIC, CASE_EVENTS_TOPIC, DECISIONS_TOPIC, DLQ_TOPIC, FOLLOWUPS_TOPIC,
                              AlertEvent, CaseEvent, FollowUpEvent, parse_resume)
 from sentinel.graph import follow_up_state, follow_up_thread, initial_state, run_config
-from sentinel.hitl import WAITING_NODE, validate_approval, validate_decision
+from sentinel.hitl import REVIEW_NODES, WAITING_NODES, validate_approval, validate_decision
 from sentinel.persistence import STATUS_AFTER_DECISION
 
 log = logging.getLogger("sentinel.worker")
@@ -32,11 +32,16 @@ log = logging.getLogger("sentinel.worker")
 Publish = Callable[[CaseEvent], Awaitable[None]]
 
 
-async def stream(graph, payload, config: dict, case_id: str, publish: Publish) -> None:
+async def stream(graph, payload, config: dict, case_id: str, publish: Publish, cases=None,
+                 level: str | None = None) -> None:
+    """Run (or resume) the graph, publishing each completed step. Once triage knows the lane the case is
+    assigned to its first review level (BR-08), so only that level sees it in progress."""
     async for update in graph.astream(payload, config, stream_mode="updates"):
         for node, out in update.items():
             if node == "__interrupt__":
                 continue
+            if node == "triage" and cases is not None and (out or {}).get("tier"):
+                await cases.assign(case_id, level or ("l1" if out["tier"] == "fast" else "l2"))
             detail = "; ".join(line.split("]", 1)[-1].strip() for line in describe_update(node, out))
             await publish(CaseEvent(case_id=case_id, type="node_completed", node=node, detail=detail or None))
             for event in (out or {}).get("security_events", []):  # each update carries only its new events
@@ -45,22 +50,24 @@ async def stream(graph, payload, config: dict, case_id: str, publish: Publish) -
 
 
 async def report_pause(graph, config: dict, case_id: str, publish: Publish, cases) -> str:
-    """After a run or resume: record where the case is waiting (approval or disposition)."""
+    """After a run or resume: record where the case is waiting and who it is with (approval: L2; review:
+    the level of that review step)."""
     snapshot = await graph.aget_state(config)
     tier = snapshot.values.get("tier")  # recorded for the work queue and the L1/L2 rule (BR-08)
     if snapshot.next == ("approve_info_request",):
         draft = snapshot.interrupts[0].value["draft"]
-        await cases.set_status(case_id, "awaiting_approval", tier=tier)
+        await cases.set_status(case_id, "awaiting_approval", tier=tier, assigned_role="l2")
         await publish(CaseEvent(case_id=case_id, type="awaiting_approval",
                                 data={"questions": len(draft["questions"]), "rail_passed": draft["rail"]["passed"]}))
         return "awaiting_approval"
-    if snapshot.next == ("human_review",):
+    if snapshot.next and snapshot.next[0] in REVIEW_NODES:
         packet = snapshot.interrupts[0].value
-        await cases.set_status(case_id, "awaiting_review", tier=tier)
+        await cases.set_status(case_id, "awaiting_review", tier=tier, assigned_role=packet["level"],
+                               qa_flagged=packet.get("qa_flagged"))
         await publish(CaseEvent(
             case_id=case_id, type="awaiting_review",
-            data={"recommendation": packet["recommendation"], "reason_code": packet["reason_code"],
-                  "tier": packet["tier"], "qa_issues": len(packet["qa_issues"]),
+            data={"level": packet["level"], "recommendation": packet["recommendation"],
+                  "reason_code": packet["reason_code"], "tier": packet["tier"], "qa_issues": len(packet["qa_issues"]),
                   "security_events": len(packet.get("security_events") or [])},
         ))
         return "awaiting_review"
@@ -77,7 +84,7 @@ async def resume(graph, snapshot, config: dict, case_id: str, publish: Publish, 
     await publish(CaseEvent(case_id=case_id, type="case_resumed",
                             detail=f"resuming from the last checkpoint at {', '.join(snapshot.next)}"))
     await cases.set_status(case_id, "in_progress")
-    await stream(graph, None, config, case_id, publish)
+    await stream(graph, None, config, case_id, publish, cases, snapshot.values.get("review_level"))
     return await report_pause(graph, config, case_id, publish, cases)
 
 
@@ -93,7 +100,7 @@ async def handle_alert(graph, raw: str, publish: Publish, cases) -> str:
         return "duplicate"
     await cases.start(alert)
     await publish(CaseEvent(case_id=case_id, type="case_started", data={"scenario": alert["scenario_code"]}))
-    await stream(graph, initial_state(alert), config, case_id, publish)
+    await stream(graph, initial_state(alert), config, case_id, publish, cases)
     return await report_pause(graph, config, case_id, publish, cases)
 
 
@@ -103,13 +110,14 @@ async def handle_decision(graph, raw: str, publish: Publish, cases) -> str:
     kind, case_id = message.pop("kind"), message.pop("case_id")
     config = run_config(await cases.thread_for(case_id))
     snapshot = await graph.aget_state(config)
-    if snapshot.next != (WAITING_NODE[kind],):
+    if not snapshot.next or snapshot.next[0] not in WAITING_NODES[kind]:
         reason = (f"case is not waiting for {'approval' if kind == 'approval' else 'review'}"
                   if snapshot.values else "unknown case")
         await publish(CaseEvent(case_id=case_id, type="decision_ignored", detail=reason))
         return "ignored"
+    level = (snapshot.interrupts[0].value.get("level") or "l2") if snapshot.interrupts else "l2"
     try:
-        (validate_approval if kind == "approval" else validate_decision)(message)
+        validate_approval(message) if kind == "approval" else validate_decision(message, level)
     except ValueError as e:
         await publish(CaseEvent(case_id=case_id, type="decision_ignored", detail=f"invalid {kind}: {e}"))
         return "ignored"
@@ -118,11 +126,13 @@ async def handle_decision(graph, raw: str, publish: Publish, cases) -> str:
         await publish(CaseEvent(case_id=case_id, type="approval_applied",
                                 data={"action": message["action"], "approver_id": message["approver_id"]}))
         return await report_pause(graph, config, case_id, publish, cases)
+    await publish(CaseEvent(case_id=case_id, type="decision_applied",
+                            data={"level": level, "action": message["action"], "reason_code": message["reason_code"],
+                                  "investigator_id": message["investigator_id"]}))
+    if (await graph.aget_state(config)).next:  # escalated: now waiting at the next level
+        return await report_pause(graph, config, case_id, publish, cases)
     status = STATUS_AFTER_DECISION[message["action"]]
     await cases.set_status(case_id, status)
-    await publish(CaseEvent(case_id=case_id, type="decision_applied",
-                            data={"action": message["action"], "reason_code": message["reason_code"],
-                                  "investigator_id": message["investigator_id"]}))
     return status
 
 
@@ -148,7 +158,7 @@ async def handle_followup(graph, raw: str, publish: Publish, cases) -> str:
     await cases.save_reply(case_id, state["follow_up"]["round"], reply.reply_text, reply.received_at)
     await cases.start(state["alert"], thread)
     await publish(CaseEvent(case_id=case_id, type="follow_up_started", data={"thread": thread}))
-    await stream(graph, state, config, case_id, publish)
+    await stream(graph, state, config, case_id, publish, cases, state.get("review_level"))
     return await report_pause(graph, config, case_id, publish, cases)
 
 

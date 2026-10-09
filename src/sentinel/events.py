@@ -45,7 +45,7 @@ class DecisionEvent(BaseModel):
 
     kind: Literal["decision"] = "decision"
     case_id: str
-    action: Literal["close", "escalate", "request_info"]
+    action: Literal["close", "escalate", "request_info", "file_sar", "no_sar"]  # file_sar/no_sar: MLRO only
     reason_code: str
     investigator_id: str
     narrative_edits: str | None = None

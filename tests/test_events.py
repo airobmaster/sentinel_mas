@@ -30,7 +30,7 @@ def test_decision_schema():
     d = DecisionEvent(case_id="C1", action="escalate", reason_code="STRUCTURING_CONFIRMED", investigator_id="I1")
     assert d.decided_at
     with pytest.raises(ValidationError):
-        DecisionEvent(case_id="C1", action="file_sar", reason_code="X", investigator_id="I1")
+        DecisionEvent(case_id="C1", action="approve_payment", reason_code="X", investigator_id="I1")
 
 
 def test_msk_iam_connection_settings(monkeypatch):

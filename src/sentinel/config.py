@@ -99,7 +99,11 @@ class Settings(BaseSettings):
     cognito_workbench_client_id: str | None = None  # React workbench: hosted sign-in page
     cognito_domain: str | None = None
     cognito_test_users: dict[str, str] = {}  # username -> password, written to .env by `sentinel auth bootstrap`
-    pii_roles: list[str] = ["l1", "l2", "admin"]  # FR-109: roles that see customer data unmasked
+    pii_roles: list[str] = ["l1", "l2", "mlro", "admin"]  # FR-109: roles that see customer data unmasked
+    blind_mode_percent: int = 0  # FR-107: share of cases reviewed without the draft and recommendation
+    # Demo only: the workbench's role dropdown signs in as a role's test user without a password prompt.
+    # Anyone who can reach the API can then act as any role, so never enable it on a shared deployment.
+    demo_role_switch: bool = False
 
 
 settings = Settings()

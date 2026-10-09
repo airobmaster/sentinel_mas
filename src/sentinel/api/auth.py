@@ -18,9 +18,10 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from sentinel.config import settings
 
-ROLES = ("l1", "l2", "qa", "sme", "admin")
-TEST_USERS = {"l1": "l1.investigator", "l2": "l2.investigator", "qa": "qa.reviewer", "sme": "sme.reviewer",
-              "admin": "admin.user"}
+ROLES = ("l1", "l2", "mlro", "qa", "sme", "admin")
+REVIEW_LEVELS = ("l1", "l2", "mlro")  # BR-17: each sees only the cases assigned to its level
+TEST_USERS = {"l1": "l1.investigator", "l2": "l2.investigator", "mlro": "mlro.officer", "qa": "qa.reviewer",
+              "sme": "sme.reviewer", "admin": "admin.user"}
 DEV_ISSUER = "sentinel-dev"
 CLOCK_SKEW = 30  # seconds: a laptop clock a little behind AWS must not reject fresh tokens
 

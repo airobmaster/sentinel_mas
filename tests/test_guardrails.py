@@ -49,6 +49,7 @@ def test_presidio_spans_skip_codes_and_ids(monkeypatch):
     assert "Margaret" not in out and all(p in out for p in phrases if p != "Margaret Thompson")
     assert pii._is_name("María de la Fuente") and not pii._is_name("El investigador cierra")
     assert not pii._is_name("TYP-GUIDE") and not pii._is_name("AML-UK") and pii._is_name("Smith-Jones")
+    assert not pii._is_name("MM") and not pii._is_name("GBR")  # country codes
 
 
 def test_usage_sums_seconds_across_rounds():

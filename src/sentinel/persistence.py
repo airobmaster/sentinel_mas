@@ -20,8 +20,13 @@ CONNECTION_KWARGS = {"autocommit": True, "prepare_threshold": 0, "row_factory": 
                      "options": f"-c search_path={CHECKPOINT_SCHEMA},public"}
 
 # Case status values in cases.alerts.status
-STATUS_AFTER_DECISION = {"close": "closed", "escalate": "escalated", "request_info": "info_requested"}
+# Final statuses after a decision ("escalate" is final only for cases decided before the review levels:
+# now it moves the case to the next level, which stays awaiting_review)
+STATUS_AFTER_DECISION = {"close": "closed", "escalate": "escalated", "request_info": "info_requested",
+                         "file_sar": "sar_filed", "no_sar": "closed"}
+DECIDED_STATUSES = ("closed", "escalated", "info_requested", "sar_filed")
 OPEN_STATUSES = ("new", "in_progress", "awaiting_approval", "awaiting_review")
+QA_SAMPLE_PERCENT = 10  # UC-05: cases whose automated QA passed, sampled for the QA reviewers
 
 # Idempotent additions to schema.sql, so a database loaded before they existed keeps working
 MIGRATIONS = (
@@ -41,8 +46,15 @@ MIGRATIONS = (
            split      text,
            metrics    jsonb NOT NULL,
            cases      jsonb NOT NULL)""",
+    # Review levels (BR-08, BR-16): who the case is with; whether its automated QA raised issues (UC-05)
+    "ALTER TABLE cases.alerts ADD COLUMN IF NOT EXISTS assigned_role text",
+    "ALTER TABLE cases.alerts ADD COLUMN IF NOT EXISTS qa_flagged boolean",
+    """UPDATE cases.alerts SET assigned_role = CASE WHEN status = 'awaiting_approval' THEN 'l2'
+                                                  WHEN tier = 'fast' THEN 'l1' ELSE 'l2' END
+       WHERE assigned_role IS NULL AND tier IS NOT NULL""",
 )
 WAIT_DONE = ("awaiting_review", "awaiting_approval", "error", *STATUS_AFTER_DECISION.values())
+ROW_COLUMNS = "case_id, status, tier, assigned_role, qa_flagged, legal_entity, customer_id"
 
 
 class CaseStore:
@@ -73,24 +85,40 @@ class CaseStore:
                 "INSERT INTO cases.customer_replies (case_id, round, reply_text, received_at) VALUES (%s, %s, %s, %s) "
                 "ON CONFLICT (case_id, round) DO NOTHING", (case_id, round_no, reply_text, received_at))
 
-    async def set_status(self, case_id: str, status: str, tier: str | None = None) -> None:
+    async def set_status(self, case_id: str, status: str, tier: str | None = None, assigned_role: str | None = None,
+                         qa_flagged: bool | None = None) -> None:
         async with self.pool.connection() as conn:
-            await conn.execute("UPDATE cases.alerts SET status = %s, tier = COALESCE(%s, tier), updated_at = now() "
-                               "WHERE case_id = %s", (status, tier, case_id))
+            await conn.execute("UPDATE cases.alerts SET status = %s, tier = COALESCE(%s, tier), "
+                               "assigned_role = COALESCE(%s, assigned_role), "
+                               # once the automated QA has flagged a case it stays in the QA queue (BR-18)
+                               "qa_flagged = COALESCE(qa_flagged, false) OR COALESCE(%s, false), "
+                               "updated_at = now() WHERE case_id = %s", (status, tier, assigned_role, qa_flagged, case_id))
+
+    async def assign(self, case_id: str, role: str) -> None:
+        """The level that owns the case (set once triage knows the lane, and at each review level)."""
+        async with self.pool.connection() as conn:
+            await conn.execute("UPDATE cases.alerts SET assigned_role = %s WHERE case_id = %s", (role, case_id))
 
     async def get(self, case_id: str) -> dict | None:
-        """The case-management record (status, lane, current thread, alert)."""
+        """The case-management record (status, lane, owner, current thread, alert)."""
         async with self.pool.connection() as conn:
             return await (await conn.execute(
-                "SELECT case_id, status, tier, legal_entity, customer_id, thread_id, alert, updated_at "
-                "FROM cases.alerts WHERE case_id = %s", (case_id,))).fetchone()
+                f"SELECT {ROW_COLUMNS}, thread_id, alert, updated_at FROM cases.alerts WHERE case_id = %s",
+                (case_id,))).fetchone()
 
     async def queue(self, statuses: list[str] | None = None, tier: str | None = None,
-                   legal_entity: str | None = None, limit: int = 200) -> list[dict]:
-        """The work queue, most recently updated first (FR-100 filters)."""
-        sql = ("SELECT case_id, status, tier, legal_entity, customer_id, alert->>'scenario_name' AS scenario, "
-               "updated_at FROM cases.alerts WHERE true")
+                   legal_entity: str | None = None, limit: int = 200, roles: list[str] | None = None,
+                   decided_only: bool = False) -> list[dict]:
+        """The work queue, most recently updated first (FR-100 filters). `roles`: only cases assigned to one
+        of these levels (BR-17: each level sees its own cases); None for administrators."""
+        sql = (f"SELECT {ROW_COLUMNS}, alert->>'scenario_name' AS scenario, updated_at FROM cases.alerts WHERE true")
         params: list = []
+        if roles is not None:
+            sql += " AND assigned_role = ANY(%s)"
+            params.append(roles)
+        if decided_only:
+            sql += " AND status = ANY(%s)"
+            params.append(list(DECIDED_STATUSES))
         if statuses:
             sql += " AND status = ANY(%s)"
             params.append(statuses)
@@ -105,13 +133,15 @@ class CaseStore:
                                              (*params, limit))).fetchall()
 
     async def qa_sample(self, reviewer: str, n: int) -> list[dict]:
-        """UC-05: random decided cases this reviewer has not labelled yet."""
+        """UC-05: decided cases for QA review, not yet labelled by this reviewer: every case whose automated QA
+        raised issues, plus a stable 10% sample of the rest (hash of the case ID; BR-18). Flagged cases come first."""
         async with self.pool.connection() as conn:
             return await (await conn.execute(
-                "SELECT case_id, status, tier, legal_entity, alert->>'scenario_name' AS scenario FROM cases.alerts a "
-                "WHERE status = ANY(%s) AND NOT EXISTS (SELECT 1 FROM cases.qa_labels l "
-                "WHERE l.case_id = a.case_id AND l.reviewer = %s) ORDER BY random() LIMIT %s",
-                (list(STATUS_AFTER_DECISION.values()), reviewer, n))).fetchall()
+                f"SELECT {ROW_COLUMNS}, alert->>'scenario_name' AS scenario, updated_at FROM cases.alerts a "
+                "WHERE status = ANY(%s) AND (qa_flagged IS TRUE OR abs(hashtext(case_id)) %% 100 < %s) "
+                "AND NOT EXISTS (SELECT 1 FROM cases.qa_labels l WHERE l.case_id = a.case_id AND l.reviewer = %s) "
+                "ORDER BY qa_flagged IS TRUE DESC, updated_at DESC LIMIT %s",
+                (list(DECIDED_STATUSES), QA_SAMPLE_PERCENT, reviewer, n))).fetchall()
 
     async def save_label(self, case_id: str, reviewer: str, label: dict) -> None:
         async with self.pool.connection() as conn:
@@ -219,5 +249,5 @@ def reset_case(case_id: str) -> None:
         for row in threads:
             saver.delete_thread(row["thread_id"])
         saver.conn.execute("DELETE FROM cases.customer_replies WHERE case_id = %s", (case_id,))
-        saver.conn.execute("UPDATE cases.alerts SET status = 'new', thread_id = NULL, updated_at = now() "
-                           "WHERE case_id = %s", (case_id,))
+        saver.conn.execute("UPDATE cases.alerts SET status = 'new', thread_id = NULL, assigned_role = NULL, "
+                           "qa_flagged = NULL, updated_at = now() WHERE case_id = %s", (case_id,))

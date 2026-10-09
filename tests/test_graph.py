@@ -35,9 +35,14 @@ async def test_clean_run_pauses_for_review_then_completes():
     assert snap.values["qa_rounds"] == 1 and snap.values["tier"] == "fast"
     assert "network" not in snap.values["findings"]  # fast lane skips the network agent
 
-    await graph.ainvoke(Command(resume=DECISION), config)
+    await graph.ainvoke(Command(resume=DECISION), config)  # L1 escalates: the case moves to L2 (BR-16)
+    escalated = await graph.aget_state(config)
+    assert escalated.next == ("l2_review",) and escalated.values["decision"] == {**DECISION, "level": "l1"}
+    close = {"action": "close", "reason_code": "FP_EXPLAINED_ACTIVITY", "investigator_id": "INV-0002"}
+    await graph.ainvoke(Command(resume=close), config)
     final = await graph.aget_state(config)
-    assert final.next == () and final.values["decision"] == DECISION
+    assert final.next == () and [(d["level"], d["action"]) for d in final.values["decisions"]] == [
+        ("l1", "escalate"), ("l2", "close")]
 
 
 async def test_full_lane_runs_network_before_typology():

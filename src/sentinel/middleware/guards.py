@@ -4,6 +4,8 @@ Tool-call path (outermost first): OPA authorisation (sees tokens, never PII) -> 
 the arguments -> injection rail on the result -> the tool. Model-call path: every message is
 PII-redacted before the model sees it."""
 
+import asyncio
+
 from langchain.agents.middleware import wrap_model_call, wrap_tool_call
 from langchain_core.messages import ToolMessage
 
@@ -22,7 +24,9 @@ def redact_messages(messages: list) -> list:
 def pii_redaction(agent: str):
     @wrap_model_call(name=f"PiiRedaction_{agent}")
     async def redact(request, handler):
-        return await handler(request.override(messages=redact_messages(request.messages)))
+        # Presidio lookups are blocking HTTP calls: run them off the event loop, which the worker shares
+        # with every other case in flight (asyncio.to_thread keeps the PII_VAULT context)
+        return await handler(request.override(messages=await asyncio.to_thread(redact_messages, request.messages)))
 
     return redact
 

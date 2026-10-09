@@ -1,5 +1,5 @@
-"""Human-in-the-loop steps (TDD §7): the disposition (every case) and the approval of a customer
-information request (UC-03).
+"""Human-in-the-loop steps (TDD §7): the review levels L1 -> L2 -> MLRO (BR-08, BR-16) and the approval of
+a customer information request (UC-03).
 
 UC-03 is a step in the main graph rather than LangChain's in-agent HumanInTheLoopMiddleware: an
 in-agent pause would sit inside a specialist's tool loop, which runs without a checkpointer, so it
@@ -12,20 +12,20 @@ from langgraph.types import interrupt
 
 from sentinel.guardrails.output_rails import check_customer_text
 from sentinel.guardrails.pii import PiiVault
-from sentinel.schemas import REASON_CODES
+from sentinel.schemas import LEVEL_ACTIONS
 from sentinel.state import CaseState
 
 APPROVAL_ACTIONS = {"approve": "approved", "edit": "approved_with_edits", "reject": "rejected"}
-# Which interrupt each kind of resume message is for
-WAITING_NODE = {"decision": "human_review", "approval": "approve_info_request"}
 
 
-def validate_decision(decision: dict) -> None:
+def validate_decision(decision: dict, level: str = "l2") -> None:
+    """BR-09: an action allowed at this review level, with one of its reason codes."""
+    codes = LEVEL_ACTIONS[level]
     action = decision.get("action")
-    if action not in REASON_CODES:
-        raise ValueError(f"Action must be one of {list(REASON_CODES)}, got {action!r}")
-    if decision.get("reason_code") not in REASON_CODES[action]:
-        raise ValueError(f"Reason code for {action} must be one of {REASON_CODES[action]}")
+    if action not in codes:
+        raise ValueError(f"Action at {level.upper()} must be one of {list(codes)}, got {action!r}")
+    if decision.get("reason_code") not in codes[action]:
+        raise ValueError(f"Reason code for {action} must be one of {codes[action]}")
     if not decision.get("investigator_id"):
         raise ValueError("investigator_id is required")
 
@@ -70,24 +70,68 @@ async def approve_info_request(state: CaseState) -> dict:
     return {"info_request": approved}
 
 
-async def human_review(state: CaseState) -> dict:
-    source = recommendation_of(state)
-    decision = interrupt(
-        {
-            "kind": "decision",
-            "case_id": state["case_id"],
-            "tier": state.get("tier"),
-            "narrative": state.get("narrative") or {},
-            "evidence": state.get("evidence", []),
-            "findings": state.get("findings", {}),
-            "qa_issues": state.get("qa_issues", []),
-            "recommendation": source.get("recommendation"),
-            "reason_code": source.get("reason_code"),
-            "info_request": state.get("info_request"),
-            "security_events": state.get("security_events", []),
-            "budget_exceeded": state.get("budget_exceeded", False),
-            "allowed_actions": list(REASON_CODES),
-        }
-    )
-    validate_decision(decision)
-    return {"decision": decision}
+# --- Review levels (BR-08, BR-16) ----------------------------------------------------------------
+# The first review is by lane: fast-lane cases go to an L1 analyst, full-lane cases straight to an L2
+# investigator (BR-08). Escalating sends the case one level up: L1 -> L2 -> MLRO. Each level is its own
+# checkpointed pause, and each level sees only the cases assigned to it.
+REVIEW_NODES = {"human_review": None, "l2_review": "l2", "mlro_review": "mlro"}  # None: first level, by lane
+NEXT_LEVEL_NODE = {"l1": "l2_review", "l2": "mlro_review"}
+# Which interrupts each kind of resume message is for
+WAITING_NODES = {"decision": tuple(REVIEW_NODES), "approval": ("approve_info_request",)}
+
+
+def first_level(state: CaseState) -> str:
+    """BR-08 by lane; a follow-up run goes back to the level that asked the customer."""
+    return state.get("review_level") or ("l1" if state.get("tier") == "fast" else "l2")
+
+
+def qa_flagged(state: CaseState) -> bool:
+    """The automated QA did not pass cleanly: unresolved serious issues, or the critic failed or was unavailable
+    (these cases always go to the QA reviewers, UC-05)."""
+    critic = state.get("findings", {}).get("qa") or {}
+    serious = any(i["severity"] in ("blocker", "major") for i in state.get("qa_issues") or [])
+    return serious or critic.get("passed") is False or bool(critic.get("error"))
+
+
+def review_step(fixed_level: str | None):
+    async def review(state: CaseState) -> dict:
+        level = fixed_level or first_level(state)
+        source = recommendation_of(state)
+        decision = interrupt(
+            {
+                "kind": "decision",
+                "level": level,
+                "case_id": state["case_id"],
+                "tier": state.get("tier"),
+                "narrative": state.get("narrative") or {},
+                "evidence": state.get("evidence", []),
+                "findings": state.get("findings", {}),
+                "qa_issues": state.get("qa_issues", []),
+                "qa_flagged": qa_flagged(state),
+                "recommendation": source.get("recommendation"),
+                "reason_code": source.get("reason_code"),
+                "info_request": state.get("info_request"),
+                "decisions": state.get("decisions", []),
+                "security_events": state.get("security_events", []),
+                "budget_exceeded": state.get("budget_exceeded", False),
+                "allowed_actions": list(LEVEL_ACTIONS[level]),
+            }
+        )
+        validate_decision(decision, level)
+        decision = {**decision, "level": level}
+        return {"decision": decision, "decisions": [decision]}
+
+    return review
+
+
+human_review = review_step(None)  # first level (name kept: cases already paused there resume as before)
+l2_review = review_step("l2")
+mlro_review = review_step("mlro")
+
+
+def route_after_review(state: CaseState) -> str:
+    """Escalate sends the case up one level; any other decision ends the run."""
+    decision = state.get("decision") or {}
+    if decision.get("action") == "escalate" and decision.get("level") in NEXT_LEVEL_NODE:
+        return NEXT_LEVEL_NODE[decision["level"]]
+    return "__end__"
