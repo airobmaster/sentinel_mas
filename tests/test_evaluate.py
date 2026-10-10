@@ -2,7 +2,8 @@ from sentinel.evaluate import metrics, stratified_sample
 
 
 def row(expected, acceptable, got, bad=0):
-    return {"expected": expected, "acceptable": acceptable, "recommendation": got, "bad_citations": bad, "seconds": 10}
+    return {"expected": expected, "acceptable": acceptable, "recommendation": got, "bad_citations": bad,
+            "citations": 5, "seconds": 10}
 
 
 def test_stratified_sample_covers_every_typology_first():
@@ -29,4 +30,4 @@ def test_metrics():
     assert m["escalation_recall"] == 0.5
     assert m["false_escalation_rate"] == 0.5
     assert m["agreement"] == 0.4 and m["acceptable"] == 0.6
-    assert m["citation_validity"] == 0.8
+    assert m["citation_validity"] == 0.96  # 1 bad of 25 citations
