@@ -1,20 +1,11 @@
 name: Eval gate
 
-# Runs held-out golden cases through the real agents on Bedrock and blocks the pull request when an
-# outcome metric or the narrative rubric falls below evals/thresholds.yaml. AWS access is through
+# Runs held-out golden cases through the real agents on Bedrock and fails when an outcome metric or the
+# narrative rubric falls below evals/thresholds.yaml. Manual only (Actions -> Eval gate -> Run workflow):
+# it calls Bedrock, and small samples are noisy, so it does not run on every pull request. AWS access is through
 # GitHub OIDC (infra/terraform/ci): repository variables AWS_ROLE_ARN and AWS_REGION, no stored keys.
 
 on:
-  pull_request:
-    paths:
-      - src/sentinel/prompts/**
-      - src/sentinel/agents/**
-      - src/sentinel/graph.py
-      - src/sentinel/schemas.py
-      - src/sentinel/guardrails/**
-      - src/sentinel/tools/**
-      - evals/thresholds.yaml
-      - .github/workflows/eval-gate.yml
   workflow_dispatch:
     inputs:
       n:
@@ -56,7 +47,7 @@ jobs:
       - name: Synthetic dataset (seeded)
         run: sentinel data generate
       - name: Gate
-        run: sentinel gate --split holdout --n ${{ inputs.n || 6 }}
+        run: sentinel gate --split holdout --n ${{ inputs.n }}
       - name: Report
         if: always()
         uses: actions/upload-artifact@v4

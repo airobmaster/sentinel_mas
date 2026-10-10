@@ -408,7 +408,7 @@ SENTINEL_LIVE=1 pytest -m live          # end to end against Bedrock, including 
 ### Continuous integration (GitHub Actions)
 
 - **`ci.yml`** on every push to `main` and every pull request: `ruff`, `mypy` (report only for now), the offline tests on the seeded dataset, `opa test` on the Rego policies, and the workbench build.
-- **`eval-gate.yml`** on pull requests that change prompts, agents, rails, tools or thresholds: runs 6 held-out golden cases through the real agents on Bedrock and **blocks the pull request** if `sentinel gate` fails. Run it manually (Actions → Eval gate → Run workflow) for all 20 held-out cases. The report is attached to the run.
+- **`eval-gate.yml`**, run manually (Actions → Eval gate → Run workflow): runs held-out golden cases (20 by default) through the real agents on Bedrock and fails if `sentinel gate` fails. The report is attached to the run. It is not run on every pull request: it calls Bedrock, and a handful of cases is too few for stable recall figures.
 - AWS access uses **GitHub OIDC**, with no stored keys: `infra/terraform/ci` creates a role that only workflows from this repository can assume and that can only invoke Bedrock models. Set the repository variables `AWS_ROLE_ARN` (the Terraform output) and `AWS_REGION` (`eu-west-2`).
 
 ---
