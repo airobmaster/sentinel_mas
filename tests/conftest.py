@@ -20,7 +20,7 @@ def pytest_asyncio_loop_factories(config, item):
     """psycopg's async driver (Postgres checkpointer) cannot use Windows' default Proactor loop."""
     if sys.platform == "win32":
         return {"selector": asyncio.SelectorEventLoop}
-    return None
+    return {"default": asyncio.new_event_loop}
 
 
 @pytest.fixture(autouse=True)

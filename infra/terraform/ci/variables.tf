@@ -13,3 +13,9 @@ variable "github_repo" {
   type        = string
   default     = "airobmaster/sentinel_mas"
 }
+
+variable "github_repo_with_ids" {
+  description = "The same repository as GitHub's OIDC subject names it: owner@owner_id/name@repo_id"
+  type        = string
+  default     = "airobmaster@201773947/sentinel_mas@1406359223"
+}

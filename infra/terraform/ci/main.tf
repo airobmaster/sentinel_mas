@@ -41,7 +41,9 @@ data "aws_iam_policy_document" "trust" {
     condition {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_repo}:*"]
+      # GitHub's subject carries the owner and repository IDs (owner@id/repo@id), which also pins
+      # the exact repository if one with the same name is ever recreated; the plain form is kept too.
+      values = ["repo:${var.github_repo}:*", "repo:${var.github_repo_with_ids}:*"]
     }
   }
 }
