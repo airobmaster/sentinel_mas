@@ -11,6 +11,7 @@ sessions that stay open for the run). Guardrails wrap every run (middleware/guar
 PII redaction with reversible tokens, OPA authorisation, the injection rail and call budgets.
 """
 
+import asyncio
 import time
 from dataclasses import dataclass, field
 
@@ -121,7 +122,7 @@ async def run_specialist(spec: Specialist, brief: str, state: dict,
             # "reconstruct" plausible-looking IDs from memory.
             finalise += ("\nEvidence IDs from the brief and your tool calls (copy them exactly): "
                          f"{', '.join(dict.fromkeys(ids))}")
-        prompt = redact_messages([SystemMessage(spec.prompt), *messages, HumanMessage(finalise)])
+        prompt = await asyncio.to_thread(redact_messages, [SystemMessage(spec.prompt), *messages, HumanMessage(finalise)])
         result = await spec.extractor.ainvoke(prompt)
     tool_calls = sum(isinstance(m, ToolMessage) for m in messages)
     model_calls = sum(isinstance(m, AIMessage) for m in messages) + 1

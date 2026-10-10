@@ -1,0 +1,91 @@
+body {
+  background: #faf7f7; /* light, warm page */
+}
+
+.sn-header {
+  background: linear-gradient(115deg, #d91e18 0%, #c4161c 55%, #a8111a 100%);
+  color: #fff;
+}
+
+/* Summary tiles: light, with a little more colour than the page */
+.sn-stat {
+  background: linear-gradient(140deg, #ffffff 0%, #fdf0f0 100%);
+  border: 1px solid #f3d6d6;
+  border-radius: 10px;
+  padding: 10px 14px;
+  height: 100%;
+  box-shadow: 0 1px 2px rgba(169, 17, 26, 0.05);
+}
+
+.sn-stat-label {
+  font-size: 12px;
+  color: #8a5a5a;
+}
+
+.sn-stat-value {
+  font-size: 15px;
+  font-weight: 600;
+  color: #3a0d0d;
+  overflow-wrap: break-word;
+}
+
+/* Case tabs: each tab a distinct pastel pill; the selected one solid red */
+.sn-tabs .mantine-Tabs-list {
+  gap: 6px;
+}
+
+.sn-tabs .mantine-Tabs-tab {
+  background: #fcecec;
+  color: #8a1c1c;
+  font-weight: 600;
+  border: 1px solid #f5d3d3;
+}
+
+.sn-tabs .mantine-Tabs-tab:hover {
+  background: #f9dcdc;
+}
+
+.sn-tabs .mantine-Tabs-tab[data-active] {
+  background: #d91e18;
+  border-color: #d91e18;
+  color: #fff;
+  box-shadow: 0 2px 6px rgba(217, 30, 24, 0.25);
+}
+
+.sn-chip {
+  cursor: pointer;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+}
+
+.sn-spin {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 3px solid #f9c4c4;
+  border-top-color: #d91e18;
+  animation: sn-rotate 0.8s linear infinite;
+  flex: none;
+}
+
+@keyframes sn-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.sn-total td {
+  font-weight: 700;
+  background: #fbe4e4;
+}
+
+.sn-network {
+  height: 460px;
+  border: 1px solid #f3d6d6;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.sn-live {
+  background: #fff5f5;
+  border-color: #f3d6d6;
+}

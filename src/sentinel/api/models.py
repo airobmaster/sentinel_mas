@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 class DecisionIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    action: Literal["close", "escalate", "request_info"]
+    action: Literal["close", "escalate", "request_info", "file_sar", "no_sar"]  # what each level may use: LEVEL_ACTIONS
     reason_code: str
     narrative_edits: str | None = Field(None, max_length=10_000)
 
@@ -20,6 +20,10 @@ class ApprovalIn(BaseModel):
     action: Literal["approve", "edit", "reject"]
     message: str | None = Field(None, max_length=5_000)
     questions: list[str] | None = Field(None, max_length=5)
+
+
+class DevTokenIn(BaseModel):
+    role: Literal["l1", "l2", "mlro", "qa", "sme", "admin"]
 
 
 class ReplyIn(BaseModel):

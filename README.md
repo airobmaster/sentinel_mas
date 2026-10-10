@@ -80,12 +80,12 @@ Sentinel is being built in thin end-to-end slices, each tested before the next w
   - The customer's reply starts a follow-up investigation on its own checkpointed thread.
 - **The Sentinel API** (FastAPI), the workbench's single entry point:
   - work queue, review packet, audit history, live progress (server-sent events), decisions, approvals, customer replies and QA labels;
-  - sign-in with Amazon Cognito and role checks: L1 analysts decide only fast-lane cases, L2 investigators approve customer requests, QA reviewers label decided cases, and only investigator roles see customer data.
+  - sign-in with Amazon Cognito and review levels: fast-lane cases go to L1 analysts and full-lane cases to L2 investigators; L1 can escalate to L2 and L2 to the MLRO, who decides whether to file a suspicious activity report. Each level sees only its own cases, L2 approves customer requests, QA reviewers label every case the automated QA flagged plus a sample of the rest, and only investigator roles see customer data.
 - **Batch jobs in Airflow:** replaying golden-set alerts through Kafka and scoring the results, refreshing the sanctions and PEP lists, rebuilding the customer network graph, and re-embedding the policy manuals.
-- **Tests:** offline, integration (Docker stack) and live (Bedrock), plus a Streamlit test console for developers.
+- **The investigator workbench** (React): Cognito sign-in, a work queue with SLA colours, the case view (evidence pack with clickable evidence chips, findings with time and usage per agent, typology and policy, network graph, audit timeline, security), live progress, the decision, approval and customer-reply panels, QA labelling, and blind review.
+- **Tests:** offline, integration (Docker stack), live (Bedrock) and browser end-to-end (Playwright), plus a Streamlit test console for developers.
 
 **Planned**
-- The React investigator workbench.
 - Observability.
 - Deployment to AWS.
 
@@ -171,7 +171,7 @@ Each case is one run of a LangGraph `StateGraph`. The run is checkpointed, so it
 | Guardrails | Presidio analyzer (PII names) with pattern matching and reversible tokens; prompt-injection and tipping-off rails; LangChain call-limit middleware and a per-case token budget | In use |
 | API | FastAPI with server-sent events and Prometheus metrics; Amazon Cognito sign-in (role groups) | In use |
 | Infrastructure as code | Terraform (Cognito user pool now; network, data and compute stacks with the AWS slice) | In use |
-| UI | React investigator workbench | Planned |
+| UI | Investigator workbench: React 19, TypeScript, Vite, Mantine, TanStack Query, oidc-client-ts (Cognito sign-in with PKCE), Cytoscape.js; served by nginx; Playwright end-to-end tests | In use |
 | Evaluation tooling | DeepEval, Promptfoo, LangSmith experiments | Planned |
 | Observability | OpenTelemetry, Tempo, Prometheus, Grafana, LangSmith (development only) | Planned |
 | Cloud | AWS: ECS Fargate, MSK Serverless, Aurora Serverless v2, Bedrock | Planned |
@@ -256,19 +256,45 @@ The modes differ in where the case runs:
   It needs `sentinel worker all` running.
 - **API (full stack):** does everything through the Sentinel API, signed in as a test user. A role switcher in the sidebar shows what each role may do and see, and a **QA review** tab lets a QA reviewer score decided cases. It needs the `api` service and the worker.
 
+### The investigator workbench
+
+`docker compose up -d` serves the workbench at **http://localhost:5173**. Sign in with one of the Cognito test users (L1, L2, MLRO, QA, admin; see below for creating them). Locally, a **View as** dropdown in the header switches between them in one click (`SENTINEL_DEMO_ROLE_SWITCH`, never enable it on a shared deployment). What you can do depends on the role:
+
+| Screen | What it shows |
+|---|---|
+| Work queue | the cases assigned to your level, by status (tick boxes), lane, legal entity and case number, with time waiting coloured by SLA; filters are kept in the address, so they survive opening a case; refreshes every 5 seconds |
+| Case view | summary (recommendation, reason code, QA, risk, lane, evidence, investigation time, tokens) and tabs: **Review** (narrative whose claims link to their evidence), **Evidence**, **Findings** (per agent, with a time and usage table), **Typology & policy**, **Network** (linked customers and shared devices), **Audit timeline** (every checkpoint and case event), **Security** |
+| Action panel | the decision for the level the case is with (L1: close, request information or escalate to L2; L2: the same, escalating to the MLRO; MLRO: file a SAR or not), with the decisions taken so far; the customer-request approval (L2); or the customer's reply (after *request information*) |
+| Live progress | a running clock and each agent step as it completes (server-sent events) |
+| QA review | sampled decided cases scored on a four-part rubric (QA reviewers) |
+
+**Blind review:** a share of cases (20% locally, `SENTINEL_BLIND_MODE_PERCENT`) is shown without the agents' draft and recommendation until the investigator decides, to measure how often investigators agree with the system unprompted.
+
+For UI development, stop the container (`docker compose stop workbench`) and run the dev server, which proxies `/api` to the API:
+
+```bash
+cd ui/workbench
+npm install
+npm run dev                      # http://localhost:5173
+npx playwright install chromium  # once
+npm run e2e                      # browser tests; need the stack and `sentinel worker all`
+```
+
+The browser tests sign in through Cognito, decide a case, approve a customer request, request information, attach the customer's reply and label a case for QA, all against the running stack. Their test cases are seeded with stubbed agents, so only the follow-up after the reply calls the models.
+
 ### The API
 
 `docker compose up -d` starts the API at http://localhost:8000 (interactive docs at `/docs`). It reads case records from Postgres and case state from the checkpointer, and sends every change as a Kafka message for the workers to apply. It checks roles and business rules first, so a request that breaks them is refused straight away.
 
 | Endpoint | Purpose | Roles |
 |---|---|---|
-| `GET /cases`, `GET /cases/{id}` | work queue (filter by status, lane, entity) and review packet | any |
+| `GET /cases`, `GET /cases/{id}` | work queue (filter by status, lane, entity) and review packet; each review level sees only the cases assigned to it | any |
 | `GET /cases/{id}/history`, `/events`, `/stream` | checkpoint timeline, case events, live progress (server-sent events) | any |
 | `POST /cases` | start a case (publishes the alert) | L2, admin |
-| `POST /cases/{id}/decision` | close, escalate or request information | L1 (fast lane only), L2 |
+| `POST /cases/{id}/decision` | at the case's level: close, request information or escalate (L1 → L2 → MLRO); the MLRO files a SAR or not | the level the case is with |
 | `POST /cases/{id}/approval` | approve, edit or reject the drafted customer request | L2 |
-| `POST /cases/{id}/reply` | attach the customer's reply (starts the follow-up) | L1, L2, admin |
-| `GET /qa/sample`, `POST /cases/{id}/qa-label` | QA sampling and rubric scores | QA |
+| `POST /cases/{id}/reply` | attach the customer's reply (starts the follow-up) | the level that asked, admin |
+| `GET /qa/sample`, `POST /cases/{id}/qa-label` | QA queue (cases whose automated QA raised issues, plus a 10% sample) and rubric scores | QA |
 | `GET /healthz`, `/readyz`, `/metrics` | health and Prometheus metrics | none |
 
 Sign-in uses Amazon Cognito. The user pool, role groups and app clients are created with Terraform:
@@ -391,6 +417,7 @@ infra/terraform/      # AWS infrastructure: identity (Cognito)
 ingestion/airflow/dags/  # Airflow DAGs (batch jobs)
 evals/datasets/       # golden set (dev / held-out split)
 devtools/             # Streamlit test console (developer tool)
+ui/workbench/         # investigator workbench (React + Mantine) and its Playwright tests
 data/fixtures/        # hand-written synthetic cases
 data/policies/        # versioned synthetic policy manuals (UK, ES) and the typology guide
 tests/                # offline, integration and live test suites

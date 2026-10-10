@@ -17,6 +17,13 @@ REASON_CODES: dict[str, list[str]] = {
     ],
     "request_info": ["SOURCE_OF_FUNDS", "BUSINESS_PURPOSE", "COUNTERPARTY_RELATIONSHIP"],
 }
+# The MLRO's decision on a case escalated by L2: report it (SAR) or not
+MLRO_REASON_CODES: dict[str, list[str]] = {
+    "file_sar": ["SUSPICION_CONFIRMED", "SANCTIONS_EXPOSURE", "NETWORK_LAUNDERING"],
+    "no_sar": ["INSUFFICIENT_GROUNDS", "EXPLAINED_ON_REVIEW", "REFER_BACK_FOR_MONITORING"],
+}
+# Who decides at each review level, and what they may decide (BR-08, BR-16)
+LEVEL_ACTIONS: dict[str, dict[str, list[str]]] = {"l1": REASON_CODES, "l2": REASON_CODES, "mlro": MLRO_REASON_CODES}
 
 
 class Observation(BaseModel):

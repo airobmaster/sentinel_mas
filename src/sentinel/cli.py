@@ -22,7 +22,7 @@ from sentinel import data
 from sentinel.config import settings
 from sentinel.graph import compile_graph, initial_state, run_config
 from sentinel.hitl import validate_decision
-from sentinel.schemas import REASON_CODES
+from sentinel.schemas import LEVEL_ACTIONS
 
 RULE = "-" * 72
 
@@ -99,7 +99,7 @@ def show_update(node: str, out: dict | None) -> None:
 def show_review_packet(p: dict) -> None:
     n = p["narrative"]
     evidence = {e["id"]: e["summary"] for e in p["evidence"]}
-    print(f"\n{RULE}\nHUMAN REVIEW - {p['case_id']} (lane: {p['tier']})\n{RULE}")
+    print(f"\n{RULE}\nHUMAN REVIEW ({(p.get('level') or 'l2').upper()}) - {p['case_id']} (lane: {p['tier']})\n{RULE}")
     print(f"Summary: {n.get('summary')}\n\nClaims:")
     for i, c in enumerate(n.get("claims", []), 1):
         print(f" {i}. {c['text']}")
@@ -116,11 +116,24 @@ def show_review_packet(p: dict) -> None:
     print(f"\nRecommendation: {p['recommendation']} ({p['reason_code']})\n{RULE}")
 
 
+def accepted_decision(p: dict, investigator: str = "INV-0001") -> dict:
+    """--accept: take the recommendation; the MLRO (who decides on a SAR, not on the alert) files it."""
+    level = p.get("level") or "l2"
+    action, code = ((p["recommendation"], p["reason_code"]) if level != "mlro"
+                    else ("file_sar", LEVEL_ACTIONS["mlro"]["file_sar"][0]))
+    return {"action": action, "reason_code": code, "investigator_id": investigator,
+            "agree_with_recommendation": level == "mlro" or action == p["recommendation"],
+            "decided_at": datetime.now(timezone.utc).isoformat()}
+
+
 def ask_decision(p: dict) -> dict:
+    level = p.get("level") or "l2"
+    codes = LEVEL_ACTIONS[level]
+    default_action = p["recommendation"] if p["recommendation"] in codes else next(iter(codes))
     while True:
-        action = input(f"Action {list(REASON_CODES)} [{p['recommendation']}]: ").strip() or p["recommendation"]
-        default_code = p["reason_code"] if action == p["recommendation"] else REASON_CODES.get(action, [""])[0]
-        code = input(f"Reason code {REASON_CODES.get(action, [])} [{default_code}]: ").strip() or default_code
+        action = input(f"{level.upper()} action {list(codes)} [{default_action}]: ").strip() or default_action
+        default_code = p["reason_code"] if action == p["recommendation"] else codes.get(action, [""])[0]
+        code = input(f"Reason code {codes.get(action, [])} [{default_code}]: ").strip() or default_code
         investigator = input("Investigator ID [INV-0001]: ").strip() or "INV-0001"
         decision = {
             "action": action,
@@ -130,7 +143,7 @@ def ask_decision(p: dict) -> dict:
             "decided_at": datetime.now(timezone.utc).isoformat(),
         }
         try:
-            validate_decision(decision)
+            validate_decision(decision, level)
             return decision
         except ValueError as e:
             print(f"Invalid decision: {e}")
@@ -163,24 +176,19 @@ async def run(alert: dict, accept: bool) -> int:
     if not snapshot.interrupts:
         print("Run ended without reaching human review.")
         return 1
-    packet = snapshot.interrupts[0].value
-    show_review_packet(packet)
-
-    if accept:
-        decision = {
-            "action": packet["recommendation"],
-            "reason_code": packet["reason_code"],
-            "investigator_id": "INV-0001",
-            "agree_with_recommendation": True,
-            "decided_at": datetime.now(timezone.utc).isoformat(),
-        }
-        print(f"--accept: taking the recommendation ({decision['action']})")
-    else:
-        decision = ask_decision(packet)
-
-    async for update in graph.astream(Command(resume=decision), config, stream_mode="updates"):
-        for node, out in update.items():
-            show_update(node, out)
+    while snapshot.interrupts:  # each review level in turn: L1/L2, then L2 and the MLRO after escalations
+        packet = snapshot.interrupts[0].value
+        show_review_packet(packet)
+        if accept:
+            decision = accepted_decision(packet)
+            print(f"--accept: {(packet.get('level') or 'l2').upper()} takes {decision['action']} ({decision['reason_code']})")
+        else:
+            decision = ask_decision(packet)
+        async for update in graph.astream(Command(resume=decision), config, stream_mode="updates"):
+            for node, out in update.items():
+                if node != "__interrupt__":
+                    show_update(node, out)
+        snapshot = await graph.aget_state(config)
 
     final = await graph.aget_state(config)
     print(f"\nCase {alert['case_id']} complete. Versions: {json.dumps(final.values.get('versions'))}")
@@ -240,8 +248,8 @@ async def kafka_decide(case_ids: list[str], action: str | None, reason_code: str
                     if not snapshot.interrupts:
                         print(f"skipped {case_id}: not waiting for review")
                         continue
-                    packet = snapshot.interrupts[0].value
-                    act, code = packet["recommendation"], packet["reason_code"]
+                    accepted = accepted_decision(snapshot.interrupts[0].value, investigator)
+                    act, code = accepted["action"], accepted["reason_code"]
                 event = DecisionEvent(case_id=case_id, action=act, reason_code=code, investigator_id=investigator,
                                       agree_with_recommendation=True if accept else None)
                 await kafka.send(prod, DECISIONS_TOPIC, event)
@@ -398,7 +406,7 @@ def main() -> None:
     dec_p = kafka_sub.add_parser("decide", help="Publish human decisions")
     dec_p.add_argument("cases", nargs="*", help="Case IDs (default: every case awaiting review)")
     dec_p.add_argument("--accept", action="store_true", help="Take each case's recommendation")
-    dec_p.add_argument("--action", choices=list(REASON_CODES))
+    dec_p.add_argument("--action", choices=sorted({a for codes in LEVEL_ACTIONS.values() for a in codes}))
     dec_p.add_argument("--reason-code")
     dec_p.add_argument("--investigator", default="INV-0001")
     tail_p = kafka_sub.add_parser("tail", help="Print case events as they arrive")

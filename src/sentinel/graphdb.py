@@ -173,22 +173,18 @@ def _score_colour(score: float | None) -> str:
     return "#F8B4B4" if score >= 0.6 else "#FCE7B2" if score >= 0.3 else "#E2E8F0"
 
 
-def network_dot(customer_id: str, max_customers: int = 15) -> str | None:
-    """Graphviz DOT for the customer's neighbourhood (2 hops): customers coloured by mule score,
-    shared devices as boxes, transfers as dashed lines. None if the customer is not in the graph."""
+def network_graph(customer_id: str, max_customers: int = 15) -> dict | None:
+    """The customer's neighbourhood (2 hops) as nodes and edges: customers with mule scores, devices
+    shared between shown customers, and transfers. None if the customer is not in the graph."""
     net = network()
     own = net.customer_scores([customer_id]).get(customer_id)
     if own is None:
         return None
     links = net.links(customer_id, MAX_HOPS)[:max_customers]
     shown = {customer_id: own, **{l["customer_id"]: l for l in links}}
-    lines = ['graph G {', 'graph [rankdir=LR, bgcolor="transparent", fontname="Helvetica"];',
-             'node [fontname="Helvetica", fontsize=10, style=filled, color="#94A3B8"];',
-             'edge [color="#64748B", fontsize=8, fontname="Helvetica"];']
-    for cid, s in shown.items():
-        label = f"{cid}\\nmule {s.get('mule_score')}"
-        extra = ', penwidth=3, color="#0B2545"' if cid == customer_id else ""
-        lines.append(f'"{cid}" [shape=ellipse, label="{label}", fillcolor="{_score_colour(s.get("mule_score"))}"{extra}];')
+    nodes = [{"id": cid, "kind": "customer", "mule_score": s.get("mule_score"), "case_customer": cid == customer_id}
+             for cid, s in shown.items()]
+    edges = []
     devices: dict[tuple[str, str], set] = defaultdict(set)  # (device_id, device_type) -> shown users
     for cid in shown:
         for d in net.devices_of(cid):
@@ -196,12 +192,34 @@ def network_dot(customer_id: str, max_customers: int = 15) -> str | None:
             if len(d["users"]) > 1 and users:
                 devices[(d["device_id"], d["device_type"])].update(users)
     for (device_id, device_type), users in sorted(devices.items()):
-        lines.append(f'"{device_id}" [shape=box, label="{device_type}\\n{device_id}", fillcolor="#DBEAFE"];')
-        lines += [f'"{u}" -- "{device_id}";' for u in sorted(users)]
+        nodes.append({"id": device_id, "kind": "device", "device_type": device_type})
+        edges += [{"source": u, "target": device_id, "kind": "uses_device"} for u in sorted(users)]
     for l in links:
         previous = l["through"][-1] if l["through"] else customer_id
         if any(v.startswith("transfer") for v in l["via"]):
-            lines.append(f'"{previous}" -- "{l["customer_id"]}" [style=dashed, label="transfer"];')
+            edges.append({"source": previous, "target": l["customer_id"], "kind": "transfer"})
+    return {"customer_id": customer_id, "nodes": nodes, "edges": edges}
+
+
+def network_dot(customer_id: str, max_customers: int = 15) -> str | None:
+    """Graphviz DOT of network_graph: customers coloured by mule score, shared devices as boxes,
+    transfers as dashed lines (the test console's diagram)."""
+    graph = network_graph(customer_id, max_customers)
+    if graph is None:
+        return None
+    lines = ['graph G {', 'graph [rankdir=LR, bgcolor="transparent", fontname="Helvetica"];',
+             'node [fontname="Helvetica", fontsize=10, style=filled, color="#94A3B8"];',
+             'edge [color="#64748B", fontsize=8, fontname="Helvetica"];']
+    for n in graph["nodes"]:
+        if n["kind"] == "customer":
+            extra = ', penwidth=3, color="#0B2545"' if n["case_customer"] else ""
+            lines.append(f'"{n["id"]}" [shape=ellipse, label="{n["id"]}\\nmule {n["mule_score"]}", '
+                         f'fillcolor="{_score_colour(n["mule_score"])}"{extra}];')
+        else:
+            lines.append(f'"{n["id"]}" [shape=box, label="{n["device_type"]}\\n{n["id"]}", fillcolor="#DBEAFE"];')
+    for e in graph["edges"]:
+        style = ' [style=dashed, label="transfer"]' if e["kind"] == "transfer" else ""
+        lines.append(f'"{e["source"]}" -- "{e["target"]}"{style};')
     lines.append("}")
     return "\n".join(lines)
 

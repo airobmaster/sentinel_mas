@@ -17,10 +17,10 @@ Requirement IDs: **FR-** functional, **BR-** business rule, **NFR-** non-functio
 | --------------- | ------------------------ | ---------------------------------------------------------------------- |
 | TM system       | System                   | Publishes alerts                                                       |
 | Sentinel agents | System                   | Read via MCP tools; write draft narrative and agent status only        |
-| L1 analyst      | Human (`l1`)           | View fast-lane cases; decide close / escalate / request_info           |
-| L2 investigator | Human (`l2`)           | View all cases; decide; edit SAR draft; approve customer info requests |
-| MLRO            | Human (outside Sentinel) | Decides SAR filing in case management                                  |
-| QA reviewer     | Human (`qa`)           | Label sampled cases; score rubric                                      |
+| L1 analyst      | Human (`l1`)           | First review of fast-lane cases: close / request_info / escalate to L2 (BR-08, BR-16); sees only cases assigned to L1 (BR-17) |
+| L2 investigator | Human (`l2`)           | First review of full-lane cases and review of L1 escalations: close / request_info / escalate to the MLRO; approve customer info requests; sees only cases assigned to L2 (BR-17) |
+| MLRO            | Human (`mlro`)         | Decides on cases escalated by L2: file a SAR or not (BR-16); sees only cases assigned to the MLRO |
+| QA reviewer     | Human (`qa`)           | Label decided cases: every case whose automated QA raised issues, plus a sample of the rest (BR-18); score rubric |
 | FinCrime SME    | Human (`sme`)          | Approve lessons; maintain typologies, rubrics, golden set              |
 | Model risk      | Human                    | Approve material changes (CI step)                                     |
 | Platform admin  | Human (`admin`)        | Config, replays, DLQ handling                                          |
@@ -96,7 +96,7 @@ Customer reply arrives (simulated) → admin/investigator attaches it → a foll
 
 ### UC-05 QA sampling and labelling
 
-QA reviewer opens a sampled case → scores it against the rubric → the label is stored and feeds the golden dataset.
+QA reviewer opens a case from the QA queue (every decided case whose automated QA raised issues, plus a 10% sample of the others: BR-18) → scores it against the rubric → the label is stored and feeds the golden dataset.
 
 ### UC-06 Approve a lesson
 
@@ -316,11 +316,12 @@ stateDiagram-v2
     in_progress --> awaiting_review: QA passed or 2nd QA fail
     in_progress --> error: retries exhausted
     error --> in_progress: admin resume
-    awaiting_review --> closed: close
-    awaiting_review --> escalated: escalate
+    awaiting_review --> closed: close (L1 / L2), no SAR (MLRO)
+    awaiting_review --> awaiting_review: escalate (L1 to L2, L2 to MLRO)
+    awaiting_review --> sar_filed: file SAR (MLRO)
     awaiting_review --> pending_info: request_info
     pending_info --> in_progress: customer reply (follow-up run)
-    escalated --> [*]: L2 / MLRO outside Sentinel
+    sar_filed --> [*]: SAR filing itself is outside Sentinel
     closed --> [*]
 ```
 
@@ -345,6 +346,9 @@ stateDiagram-v2
 | BR-13 | Agents only see policy chunks for their own legal entity.                                                                                                                                                                                                                                                                                                                             |
 | BR-14 | Production data never goes to LangSmith. Dev uses synthetic/anonymised data only.                                                                                                                                                                                                                                                                                                     |
 | BR-15 | A model upgrade or new tool is a material change and needs model-risk approval.                                                                                                                                                                                                                                                                                                       |
+| BR-16 | Review levels: the first review is by lane (BR-08: fast lane L1, full lane L2). L1 may close, request information or escalate to L2; L2 may close, request information or escalate to the MLRO; the MLRO decides whether to file a SAR. Each level is a separate pause in the case run, and every decision is recorded with its level. |
+| BR-17 | Each review level sees only the cases assigned to it; cases at other levels are not disclosed (need-to-know). Exception: a fast-lane case waits with L2 only while L2 approves its customer information request (UC-03), then returns to L1. Administrators see all cases; QA reviewers see decided cases. |
+| BR-18 | QA reviewers label every decided case whose automated QA raised issues (unresolved blocker/major issues, a failed critic review, or no critic review), plus a stable 10% sample of the other decided cases. |
 
 ---
 
@@ -445,6 +449,6 @@ Evidence ID formats: `txn:<id>`, `acct:<id>`, `cust:<id>`, `list:<list>:<entry>`
 ## 13. Out of scope
 
 - Real customer data or connections to real bank systems.
-- SAR filing to any regulator; MLRO workflow.
+- SAR filing to any regulator (the MLRO's decision to file is recorded in Sentinel; the filing itself happens outside).
 - Transaction-monitoring rule tuning (Sentinel consumes alerts; it does not generate them).
 - Multi-language narratives (policies may be multilingual; narratives are English in the portfolio build).

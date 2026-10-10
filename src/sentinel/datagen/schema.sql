@@ -102,6 +102,8 @@ CREATE TABLE cases.alerts (
     status       text NOT NULL DEFAULT 'new',
     thread_id    text,                                   -- current run: case_id, or case_id:rN after a follow-up
     tier         text,                                   -- lane (fast/full) once triage has run
+    assigned_role text,                                  -- review level that owns the case: l1, l2, mlro
+    qa_flagged   boolean,                                -- automated QA raised issues (always QA-reviewed)
     updated_at   timestamptz NOT NULL DEFAULT now()
 );
 

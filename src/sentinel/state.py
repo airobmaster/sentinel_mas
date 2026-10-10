@@ -57,7 +57,9 @@ class CaseState(TypedDict):
     qa_issues: NotRequired[list[QAIssue]]  # overwritten each QA round
     qa_rounds: NotRequired[int]
     rework_target: NotRequired[str | None]
-    decision: NotRequired[dict | None]  # written ONLY by human_review
+    decision: NotRequired[dict | None]  # the latest human decision; written ONLY by the review steps
+    decisions: Annotated[list[dict], add_events]  # every level's decision in order (L1 -> L2 -> MLRO)
+    review_level: NotRequired[str]  # follow-up runs: the level that asked the customer, who reviews again
     versions: Annotated[dict, merge_dicts]  # prompt/model versions per agent, for audit
     # Guardrails (Slice 6)
     security_events: Annotated[list[dict], add_events]  # injections caught, tools denied, budget hits

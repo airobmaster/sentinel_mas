@@ -183,7 +183,8 @@ def score_cases(case_ids: list[str], source: str = "kafka", split: str | None = 
             row = truth_row(case_id, truth[case_id])
             config = run_config(case_thread(case_id))
             snap = graph.get_state(config)
-            if not snap.values or snap.next not in (("human_review",), ("approve_info_request",)):
+            reached_review = snap.next in (("human_review",), ("approve_info_request",)) or (snap.values or {}).get("decision")
+            if not snap.values or not reached_review:  # the agents' recommendation is scored, decided or not
                 row["error"] = f"not at human review (next: {list(snap.next) or 'nothing'})"
             else:
                 row |= scored(snap.values)

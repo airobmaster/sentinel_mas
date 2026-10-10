@@ -18,8 +18,9 @@ variable "roles" {
   description = "Cognito groups = API roles"
   type        = map(string)
   default = {
-    l1    = "L1 analyst: decides fast-lane cases (BR-08), attaches customer replies"
-    l2    = "L2 investigator: decides any case, approves customer information requests (UC-03)"
+    l1    = "L1 analyst: reviews fast-lane cases (BR-08): closes, requests information or escalates to L2"
+    l2    = "L2 investigator: decides full-lane and escalated cases, approves customer information requests (UC-03)"
+    mlro  = "MLRO: decides whether to file a SAR on cases escalated by L2"
     qa    = "QA reviewer: samples and labels decided cases (UC-05)"
     sme   = "Subject-matter expert: approves lessons (backlog)"
     admin = "Administrator: starts cases manually, attaches customer replies"

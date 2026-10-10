@@ -56,16 +56,16 @@ from sentinel.persistence import (
     reset_case,
     sync_checkpointer,
 )
-from sentinel.schemas import REASON_CODES
+from sentinel.schemas import LEVEL_ACTIONS
 
 if sys.platform == "win32":  # psycopg's async driver cannot use the default Proactor loop on Windows
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 ALERT_DIR = REPO_ROOT / "data" / "fixtures" / "alerts"
-ACTIONS = list(REASON_CODES)
+LEVEL_NAME = {"l1": "L1 analyst", "l2": "L2 investigator", "mlro": "MLRO"}
 STATUS_ICON = {"new": "⚪", "in_progress": "🔵", "awaiting_approval": "🟠", "awaiting_review": "🟡", "closed": "🟢",
-               "escalated": "🔴", "info_requested": "🟣", "error": "⛔", None: "⚪"}
-TERMINAL = ("closed", "escalated", "info_requested")
+               "escalated": "🔴", "sar_filed": "🔴", "info_requested": "🟣", "error": "⛔", None: "⚪"}
+TERMINAL = ("closed", "escalated", "sar_filed", "info_requested")
 ALL_STATUSES = list(OPEN_STATUSES) + list(TERMINAL) + ["error"]
 DIRECT, KAFKA, API = "Direct (in-process)", "Kafka (full stack)", "API (full stack)"
 MODE_BADGE = {DIRECT: "Direct", KAFKA: "Kafka", API: "API"}
@@ -239,12 +239,18 @@ def events_frame(events: list[dict]) -> pd.DataFrame:
 
 
 def decision_form(case_id: str, packet: dict) -> dict | None:
-    """Render the decision form; return a validated decision when submitted."""
-    st.markdown("#### Your decision")
+    """Render the decision form for the level the case is with (L1, L2 or MLRO); return a validated decision."""
+    level = packet.get("level") or "l2"
+    level_codes = LEVEL_ACTIONS[level]
+    actions = list(level_codes)
+    st.markdown(f"#### Your decision · {LEVEL_NAME[level]}")
+    if previous := packet.get("decisions"):
+        st.caption("Escalated to you: " + " → ".join(f"{LEVEL_NAME.get(d['level'], d['level'])} {d['action']} "
+                                                       f"({d['reason_code']})" for d in previous))
     rec = packet.get("recommendation")
-    action = st.radio("Action", ACTIONS, index=ACTIONS.index(rec) if rec in ACTIONS else 0, horizontal=True,
-                      key=f"action-{case_id}")
-    codes = REASON_CODES[action]
+    action = st.radio("Action", actions, index=actions.index(rec) if rec in actions else 0, horizontal=True,
+                      key=f"action-{case_id}-{level}")
+    codes = level_codes[action]
     default = codes.index(packet["reason_code"]) if packet.get("reason_code") in codes else 0
     reason_code = st.selectbox("Reason code", codes, index=default, key=f"code-{case_id}")
     investigator = st.text_input("Investigator ID", "INV-0001", key=f"inv-{case_id}")
@@ -255,7 +261,7 @@ def decision_form(case_id: str, packet: dict) -> dict | None:
                 "narrative_edits": notes or None, "agree_with_recommendation": action == rec,
                 "decided_at": now()}
     try:
-        validate_decision(decision)
+        validate_decision(decision, level)
     except ValueError as e:
         st.error(str(e))
         return None
@@ -699,9 +705,12 @@ def direct_case_view(case_id: str, alert: dict, run_now: bool) -> None:
 
     def on_decision(decision: dict) -> None:
         snap = execute(case_id, Command(resume=decision), run_config(run["thread_id"]), "Recording decision")
-        run.update(values=snap.values, packet=None, status=STATUS_AFTER_DECISION[decision["action"]], updated=now())
         emit(case_id, "decision_applied", data_={"action": decision["action"], "reason_code": decision["reason_code"],
                                                  "investigator_id": decision["investigator_id"]})
+        if snap.interrupts:  # escalated: now waiting at the next level (BR-16)
+            record_pause(case_id, run, snap)
+        else:
+            run.update(values=snap.values, packet=None, status=STATUS_AFTER_DECISION[decision["action"]], updated=now())
         st.rerun()
 
     def on_approval(approval: dict) -> None:
@@ -893,7 +902,7 @@ def kafka_mode() -> None:
 # --- API mode -----------------------------------------------------------------------------------
 # Everything goes through the Sentinel API with a signed-in test user's token: the same calls the
 # React workbench will make. Roles change what you may do (BR-08, UC-03, UC-05) and see (FR-109).
-API_ROLES = {"l1": "L1 analyst", "l2": "L2 investigator", "qa": "QA reviewer", "admin": "Administrator"}
+API_ROLES = {"l1": "L1 analyst", "l2": "L2 investigator", "mlro": "MLRO", "qa": "QA reviewer", "admin": "Administrator"}
 QA_RUBRIC = {"evidence_complete": "Evidence complete", "citations_accurate": "Citations accurate",
              "recommendation_sound": "Recommendation sound", "narrative_clear": "Narrative clear"}
 
