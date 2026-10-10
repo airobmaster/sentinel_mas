@@ -225,6 +225,13 @@ def save_eval_run(report: dict) -> None:
                       Jsonb(report["metrics"]), Jsonb(report["cases"])))
 
 
+def update_eval_run(run_id: str, metrics: dict, cases: list[dict]) -> None:
+    """Add later scores (e.g. the narrative judge) to a stored evaluation run."""
+    with psycopg.connect(settings.pg_dsn, **CONNECTION_KWARGS) as conn:
+        conn.execute("UPDATE evals.runs SET metrics = %s, cases = %s WHERE run_id = %s",
+                     (Jsonb(metrics), Jsonb(cases), run_id))
+
+
 def wait_for_cases(case_ids: list[str], timeout: float, poll: float = 15) -> dict[str, str]:
     """Block until every case has paused for a human (or failed); returns case -> status."""
     import time

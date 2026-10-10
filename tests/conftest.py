@@ -2,9 +2,12 @@
 Tests marked `live` or `integration` use the configured settings (e.g. the Docker stack)."""
 
 import asyncio
+import os
 import sys
 
-import pytest
+os.environ.setdefault("LANGSMITH_TRACING", "false")  # tests never send traces to LangSmith (set before sentinel loads .env)
+
+import pytest  # noqa: E402
 
 from sentinel import data
 from sentinel.agents import factory

@@ -1,0 +1,16 @@
+# CI (GitHub Actions): the service packages plus what the offline tests, the dataset generator, the
+# console tests and the eval gate import. Leaves out the heavy local-only tools (docling, Presidio).
+-r requirements-service.txt
+fastmcp>=2.10,<3.0
+langsmith>=0.4
+python-dotenv>=1.0
+faker>=28.0
+pandas>=2.2
+deepeval>=4.2
+pyyaml>=6.0
+streamlit>=1.40
+pytest>=8.3
+pytest-asyncio>=0.24
+psutil>=5.9
+ruff>=0.6
+mypy>=1.11

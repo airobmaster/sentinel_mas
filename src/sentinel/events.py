@@ -1,6 +1,6 @@
 """Kafka message schemas (TDD §3.1, §3.2, §7.2, §12). Validated on both produce and consume."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -14,7 +14,7 @@ TOPICS = (ALERTS_TOPIC, DECISIONS_TOPIC, CASE_EVENTS_TOPIC, DLQ_TOPIC, FOLLOWUPS
 
 
 def now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class AlertEvent(BaseModel):

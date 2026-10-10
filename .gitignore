@@ -139,3 +139,4 @@ ehthumbs.db
 # ---------- Claude Code local settings ----------
 .claude/settings.local.json
 ui/workbench/e2e/.cases.json
+evals/promptfoo/results.json

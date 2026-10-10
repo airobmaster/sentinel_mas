@@ -6,8 +6,8 @@ USER root
 RUN python -m venv /opt/sentinel && chown -R airflow: /opt/sentinel
 USER airflow
 
-COPY --chown=airflow requirements-service.txt /tmp/requirements-service.txt
-RUN /opt/sentinel/bin/pip install --no-cache-dir -r /tmp/requirements-service.txt
+COPY --chown=airflow requirements-service.txt requirements-airflow.txt /tmp/
+RUN /opt/sentinel/bin/pip install --no-cache-dir -r /tmp/requirements-airflow.txt
 
 COPY --chown=airflow pyproject.toml /opt/sentinel-src/pyproject.toml
 COPY --chown=airflow src /opt/sentinel-src/src

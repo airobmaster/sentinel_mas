@@ -5,7 +5,7 @@ gathered in a context variable that run_specialist sets and returns to the node.
 
 import logging
 from contextvars import ContextVar
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 log = logging.getLogger("sentinel.security")
 
@@ -14,7 +14,7 @@ SECURITY_EVENTS: ContextVar[list | None] = ContextVar("sentinel_security_events"
 
 def record(kind: str, agent: str, detail: str, **data) -> dict:
     event = {"kind": kind, "agent": agent, "detail": detail, "data": data,
-             "at": datetime.now(timezone.utc).isoformat()}
+             "at": datetime.now(UTC).isoformat()}
     log.warning("security_event %s agent=%s %s", kind, agent, detail)
     events = SECURITY_EVENTS.get()
     if events is not None:

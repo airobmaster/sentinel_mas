@@ -105,5 +105,28 @@ class Settings(BaseSettings):
     # Anyone who can reach the API can then act as any role, so never enable it on a shared deployment.
     demo_role_switch: bool = False
 
+    # Observability (FR-150/151): OTLP/HTTP endpoint of the OpenTelemetry collector, e.g.
+    # http://localhost:4318. Unset = no tracing (offline tests).
+    otel_endpoint: str | None = None
+    environment: str = "local"
+    worker_metrics_port: int = 9464  # Prometheus /metrics of the Kafka workers
+    grafana_url: str = "http://localhost:3000"  # trace links in the workbench
+
 
 settings = Settings()
+
+
+def _export_langsmith_env() -> None:
+    """LangSmith (development tracing and experiments, synthetic data only: BR-14) reads its settings from the
+    process environment, which pydantic-settings does not populate from .env. Values already set win."""
+    env_file = REPO_ROOT / ".env"
+    if not env_file.exists():
+        return
+    from dotenv import dotenv_values
+
+    for key, value in dotenv_values(env_file).items():
+        if key.startswith(("LANGSMITH_", "LANGCHAIN_")) and value and key not in os.environ:
+            os.environ[key] = value
+
+
+_export_langsmith_env()

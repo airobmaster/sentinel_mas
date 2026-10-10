@@ -15,7 +15,7 @@ pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(socket.socket().connect_ex(("localhost", 8088)) != 0, reason="Airflow not running"),
 ]
-DAGS = {"alert_replay", "sanctions_refresh", "graph_rebuild", "policy_reembed"}
+DAGS = {"alert_replay", "nightly_eval", "sanctions_refresh", "graph_rebuild", "policy_reembed"}
 
 
 def airflow(*args: str) -> str:
@@ -25,7 +25,7 @@ def airflow(*args: str) -> str:
 
 def test_dags_load_without_errors():
     assert "No data found" in airflow("dags", "list-import-errors")
-    assert DAGS <= {d["dag_id"] for d in json.loads(airflow("dags", "list", "-o", "json"))}
+    assert {d["dag_id"] for d in json.loads(airflow("dags", "list", "-o", "json"))} >= DAGS
 
 
 def test_sentinel_cli_is_installed_for_the_tasks():

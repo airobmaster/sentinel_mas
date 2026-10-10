@@ -1,0 +1,38 @@
+# OpenTelemetry collector: receives traces from the API, workers and Airflow tasks (OTLP), sends them to
+# Tempo, and derives request/latency metrics per span (agent steps, tools, model calls) for Prometheus.
+receivers:
+  otlp:
+    protocols:
+      grpc: { endpoint: 0.0.0.0:4317 }
+      http: { endpoint: 0.0.0.0:4318 }
+
+processors:
+  batch: {}
+
+connectors:
+  span_metrics:
+    histogram:
+      explicit:
+        buckets: [100ms, 500ms, 1s, 2s, 5s, 10s, 20s, 30s, 60s, 120s, 300s]
+    dimensions:
+      - name: sentinel.node
+      - name: sentinel.kind
+    metrics_flush_interval: 15s
+
+exporters:
+  otlp_grpc/tempo:
+    endpoint: tempo:4317
+    tls: { insecure: true }
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    namespace: sentinel_traces
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp_grpc/tempo, span_metrics]
+    metrics:
+      receivers: [span_metrics]
+      exporters: [prometheus]

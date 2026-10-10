@@ -50,7 +50,7 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
 
 export const api = {
   authConfig: () => call<{ mode: "dev" | "cognito"; authority?: string; client_id?: string; domain?: string;
-    demo_role_switch?: boolean }>("GET", "/auth/config"),
+    demo_role_switch?: boolean; grafana_url?: string }>("GET", "/auth/config"),
   devToken: (role: string) => call<{ access_token: string }>("POST", "/auth/dev-token", { role }),
   demoSignIn: (role: string) => call<{ access_token: string }>("POST", "/auth/demo-sign-in", { role }),
   me: () => call<Me>("GET", "/me"),

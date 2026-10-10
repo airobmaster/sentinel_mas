@@ -1,0 +1,23 @@
+# Tempo 2.x: trace storage on the local disk (development), 7 days of traces.
+stream_over_http_enabled: true
+server:
+  http_listen_port: 3200
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc: { endpoint: 0.0.0.0:4317 }
+
+ingester:
+  max_block_duration: 5m
+
+compactor:
+  compaction:
+    block_retention: 168h
+
+storage:
+  trace:
+    backend: local
+    wal: { path: /var/tempo/wal }
+    local: { path: /var/tempo/blocks }

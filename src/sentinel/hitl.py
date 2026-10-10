@@ -6,7 +6,7 @@ in-agent pause would sit inside a specialist's tool loop, which runs without a c
 would not survive a restart or travel over Kafka. As a graph step it is checkpointed in Postgres,
 resumable through the decisions topic, and auditable like the disposition."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from langgraph.types import interrupt
 
@@ -61,7 +61,7 @@ async def approve_info_request(state: CaseState) -> dict:
         "message": approval.get("message") if edited else request["message"],
         "questions": approval.get("questions") or request["questions"],
         "approver_id": approval["approver_id"],
-        "decided_at": approval.get("decided_at") or datetime.now(timezone.utc).isoformat(),
+        "decided_at": approval.get("decided_at") or datetime.now(UTC).isoformat(),
     }
     if approval["action"] != "reject":  # the text the customer receives, with PII tokens swapped back
         vault = PiiVault(mapping=state.get("pii_vault"))

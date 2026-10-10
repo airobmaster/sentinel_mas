@@ -14,7 +14,7 @@ import random
 import time
 import uuid
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sentinel import data
 from sentinel.config import REPO_ROOT, settings
@@ -30,7 +30,11 @@ def stratified_sample(alerts: list[dict], truth: dict[str, dict], n: int) -> lis
     for a in alerts:
         if a["case_id"] in truth:
             by_typology[truth[a["case_id"]]["typology"]].append(a)
-    queues = [iter(v) for _, v in sorted(by_typology.items())]
+    # Alternate must-escalate and other typologies, so even a small sample (the CI gate) has both kinds
+    escalate = [k for k in sorted(by_typology) if truth[by_typology[k][0]["case_id"]]["expected"] == "escalate"]
+    others = [k for k in sorted(by_typology) if k not in escalate]
+    order = [k for pair in itertools.zip_longest(escalate, others) for k in pair if k]
+    queues = [iter(by_typology[k]) for k in order]
     picked = [a for a in itertools.chain.from_iterable(itertools.zip_longest(*queues)) if a]
     return picked[:n]
 
@@ -40,10 +44,12 @@ def truth_row(case_id: str, truth: dict) -> dict:
             "acceptable": truth["acceptable"], "injection": bool(truth.get("injection"))}
 
 
-def scored(values: dict) -> dict:
-    """What the evaluation records about one finished run (its state at human review)."""
+def scored(values: dict, details: bool = False) -> dict:
+    """What the evaluation records about one finished run (its state at human review). `details` adds the
+    narrative, the alert and the cited evidence, for the narrative judge (sentinel.quality)."""
     narrative = values.get("narrative") or {}
-    return {
+    extra = narrative_inputs(values) if details else {}
+    return extra | {
         "recommendation": narrative.get("recommendation"),
         "reason_code": narrative.get("reason_code"),
         "tier": values.get("tier"),
@@ -56,14 +62,33 @@ def scored(values: dict) -> dict:
     }
 
 
-async def run_case(graph, alert: dict, truth: dict, run_id: str, sem: asyncio.Semaphore) -> dict:
+def narrative_inputs(values: dict) -> dict:
+    """The narrative as the investigator reads it, the alert, and the evidence its claims cite."""
+    narrative = values.get("narrative") or {}
+    if not narrative:
+        return {}
+    evidence = {e["id"]: e["summary"] for e in values.get("evidence") or []}
+    claims = [f"- {c['text']} [{', '.join(c['evidence_ids'])}]" for c in narrative.get("claims", [])]
+    cited = dict.fromkeys(eid for c in narrative.get("claims", []) for eid in c["evidence_ids"])
+    alert = values.get("alert") or {}
+    return {
+        "alert_text": f"Alert {alert.get('scenario_code')}: {alert.get('scenario_name')} (legal entity "
+                      f"{alert.get('legal_entity')}, lane {values.get('tier')})",
+        "narrative_text": "\n".join([f"Summary: {narrative.get('summary', '')}", "Claims:", *claims,
+                                     f"Recommendation: {narrative.get('recommendation')} ({narrative.get('reason_code')})"]),
+        "evidence_context": [f"{eid}: {evidence.get(eid, 'NOT IN EVIDENCE')}" for eid in cited][:40],
+    }
+
+
+async def run_case(graph, alert: dict, truth: dict, run_id: str, sem: asyncio.Semaphore,
+                   details: bool = False) -> dict:
     row = truth_row(alert["case_id"], truth)
     async with sem:
         start = time.perf_counter()
         try:
             config = run_config(f"{alert['case_id']}:eval-{run_id}")
             await graph.ainvoke(initial_state(alert), config)
-            row |= scored((await graph.aget_state(config)).values)
+            row |= scored((await graph.aget_state(config)).values, details)
         except Exception as e:  # one failing case must not stop the batch
             while isinstance(e, ExceptionGroup) and e.exceptions:  # MCP sessions wrap errors in task groups
                 e = e.exceptions[0]
@@ -98,7 +123,8 @@ def metrics(rows: list[dict]) -> dict:
     }
 
 
-async def evaluate(n: int = 20, concurrency: int = 4, case_ids: list[str] | None = None) -> dict:
+async def evaluate(n: int = 20, concurrency: int = 4, case_ids: list[str] | None = None, source: str = "in-process",
+                   split: str | None = None, details: bool = False) -> dict:
     truth = data.ground_truth()
     alerts = data.list_alerts()
     if case_ids:
@@ -108,15 +134,15 @@ async def evaluate(n: int = 20, concurrency: int = 4, case_ids: list[str] | None
     run_id = uuid.uuid4().hex[:6]
     graph = compile_graph()
     sem = asyncio.Semaphore(concurrency)
-    rows = await asyncio.gather(*(run_case(graph, a, truth[a["case_id"]], run_id, sem) for a in sample))
-    return save_report(run_id, "in-process", list(rows))
+    rows = await asyncio.gather(*(run_case(graph, a, truth[a["case_id"]], run_id, sem, details) for a in sample))
+    return save_report(run_id, source, list(rows), split)
 
 
 def save_report(run_id: str, source: str, rows: list[dict], split: str | None = None) -> dict:
     """Write the report to evals/results and, when Postgres is the backend, to evals.runs."""
     report = {
         "run_id": run_id,
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(UTC).isoformat(),
         "source": source,
         "split": split,
         "settings": {"data_backend": settings.data_backend, "tool_mode": settings.tool_mode,
@@ -170,7 +196,7 @@ def select_cases(split: str = "dev", n: int | None = None) -> list[str]:
     return [a["case_id"] for a in stratified_sample(alerts, truth, n or len(alerts))]
 
 
-def score_cases(case_ids: list[str], source: str = "kafka", split: str | None = None) -> dict:
+def score_cases(case_ids: list[str], source: str = "kafka", split: str | None = None, details: bool = False) -> dict:
     """Score cases from the durable checkpointer as the workers left them (Airflow `alert_replay`):
     the same metrics as `evaluate`, with time from the first to the last checkpoint of each run."""
     from sentinel.persistence import case_thread, sync_checkpointer
@@ -187,7 +213,7 @@ def score_cases(case_ids: list[str], source: str = "kafka", split: str | None = 
             if not snap.values or not reached_review:  # the agents' recommendation is scored, decided or not
                 row["error"] = f"not at human review (next: {list(snap.next) or 'nothing'})"
             else:
-                row |= scored(snap.values)
+                row |= scored(snap.values, details)
                 history = [s.created_at for s in graph.get_state_history(config)]
                 row["seconds"] = round((datetime.fromisoformat(max(history)) -
                                         datetime.fromisoformat(min(history))).total_seconds(), 1)

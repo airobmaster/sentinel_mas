@@ -85,7 +85,8 @@ def detect_pass_through(
     for c in (t for t in txns if t["direction"] == "credit" and t["amount"] >= PASS_THROUGH_MIN_CREDIT):
         for d in debits:
             gap = (date.fromisoformat(d["date"]) - date.fromisoformat(c["date"])).days
-            if d["txn_id"] not in used and 0 <= gap <= max_days and PASS_THROUGH_MIN_SHARE * c["amount"] <= d["amount"] <= c["amount"]:
+            share_ok = PASS_THROUGH_MIN_SHARE * c["amount"] <= d["amount"] <= c["amount"]
+            if d["txn_id"] not in used and 0 <= gap <= max_days and share_ok:
                 used.add(d["txn_id"])
                 pairs.append((c, d, gap))
                 break

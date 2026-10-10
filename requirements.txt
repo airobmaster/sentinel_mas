@@ -79,7 +79,7 @@ opentelemetry-instrumentation-httpx>=0.48b0
 prometheus-client>=0.20
 
 # --- Evaluation -------------------------------------------------------------
-deepeval>=2.0
+deepeval>=4.2                       # quality gate narrative judge (G-Eval); pins click<8.4 but works with 8.5
 
 # --- Testing & code quality (dev) -------------------------------------------
 pytest>=8.3

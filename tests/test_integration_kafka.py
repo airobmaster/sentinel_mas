@@ -10,8 +10,16 @@ import pytest
 
 from sentinel import kafka, persistence
 from sentinel.config import REPO_ROOT
-from sentinel.events import (ALERTS_TOPIC, CASE_EVENTS_TOPIC, DECISIONS_TOPIC, FOLLOWUPS_TOPIC, AlertEvent,
-                             ApprovalEvent, DecisionEvent, FollowUpEvent)
+from sentinel.events import (
+    ALERTS_TOPIC,
+    CASE_EVENTS_TOPIC,
+    DECISIONS_TOPIC,
+    FOLLOWUPS_TOPIC,
+    AlertEvent,
+    ApprovalEvent,
+    DecisionEvent,
+    FollowUpEvent,
+)
 from sentinel.graph import compile_graph, run_config
 from sentinel.persistence import durable_state
 from sentinel.workers import HANDLERS, run_worker

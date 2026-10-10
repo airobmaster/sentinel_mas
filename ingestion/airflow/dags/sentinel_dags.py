@@ -52,6 +52,31 @@ with DAG(
     select >> publish >> wait >> score
 
 with DAG(
+    "nightly_eval",
+    description="Nightly quality check: held-out cases through Kafka, scored and judged against the thresholds",
+    schedule="0 2 * * *",
+    start_date=START,
+    catchup=False,
+    default_args=DEFAULTS,
+    tags=["sentinel", "evaluation"],
+    params={"n": Param(6, type="integer", minimum=1, maximum=20, description="Held-out cases")},
+    doc_md="Replays held-out golden cases through Kafka (the workers must be running), then runs the quality "
+           "gate on the results: outcome metrics plus the narrative rubric (DeepEval G-Eval, Claude Haiku). The "
+           "`gate` task fails when a threshold in evals/thresholds.yaml is missed. Scores land in `evals.runs` "
+           "(Grafana: Sentinel · Case KPIs).",
+) as nightly_eval:
+    select_nightly = BashOperator(task_id="select_cases", do_xcom_push=True,
+                                  bash_command=f"{SENTINEL} replay select --split holdout --n {{{{ params.n }}}}")
+    nightly_cases = "{{ ti.xcom_pull(task_ids='select_cases') }}"
+    publish_nightly = BashOperator(task_id="publish_alerts", bash_command=f"{SENTINEL} replay publish {nightly_cases}",
+                                   retries=0)
+    wait_nightly = BashOperator(task_id="wait_for_review", retries=0, execution_timeout=timedelta(hours=4),
+                                bash_command=f"{SENTINEL} replay wait {nightly_cases} --timeout 10800")
+    gate_nightly = BashOperator(task_id="gate", retries=0,
+                                bash_command=f"{SENTINEL} gate --from-runs --split holdout --cases {nightly_cases}")
+    select_nightly >> publish_nightly >> wait_nightly >> gate_nightly
+
+with DAG(
     "sanctions_refresh",
     description="Reload the sanctions and PEP lists",
     schedule="0 5 * * *",

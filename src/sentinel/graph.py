@@ -24,8 +24,7 @@ from sentinel.agents.txn import txn
 from sentinel.agents.typology import typology
 from sentinel.config import settings
 from sentinel.guards.citations import FAST_LANE_SPECIALISTS
-from sentinel.hitl import (approve_info_request, human_review, l2_review, mlro_review, recommendation_of,
-                           route_after_review)
+from sentinel.hitl import approve_info_request, human_review, l2_review, mlro_review, recommendation_of, route_after_review
 from sentinel.state import CaseState
 
 # A reworked specialist rejoins downstream of the join: a waiting join would never fire again.
@@ -143,5 +142,10 @@ def follow_up_thread(case_id: str, state: CaseState) -> str:
 
 
 def run_config(thread_id: str) -> dict:
-    """thread_id is the case_id in production; test tools may add a suffix to rerun a case."""
-    return {"configurable": {"thread_id": thread_id}, "recursion_limit": settings.graph_recursion_limit}
+    """thread_id is the case_id in production; test tools may add a suffix to rerun a case. With tracing on,
+    the run reports its steps, model calls and tool calls as spans tagged with the case ID."""
+    from sentinel.telemetry import callbacks_for
+
+    case_id = thread_id.split(":", 1)[0]
+    return {"configurable": {"thread_id": thread_id}, "recursion_limit": settings.graph_recursion_limit,
+            "callbacks": callbacks_for(case_id), "metadata": {"case_id": case_id, "thread_id": thread_id}}

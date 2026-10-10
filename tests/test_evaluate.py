@@ -7,10 +7,12 @@ def row(expected, acceptable, got, bad=0):
 
 def test_stratified_sample_covers_every_typology_first():
     alerts = [{"case_id": f"C{i}"} for i in range(6)]
-    truth = {"C0": {"typology": "A"}, "C1": {"typology": "A"}, "C2": {"typology": "A"},
-             "C3": {"typology": "B"}, "C4": {"typology": "C"}, "C5": {"typology": "C"}}
+    esc, close = "escalate", "close"
+    truth = {"C0": {"typology": "A", "expected": esc}, "C1": {"typology": "A", "expected": esc},
+             "C2": {"typology": "A", "expected": esc}, "C3": {"typology": "B", "expected": esc},
+             "C4": {"typology": "C", "expected": close}, "C5": {"typology": "C", "expected": close}}
     picked = [a["case_id"] for a in stratified_sample(alerts, truth, 4)]
-    assert picked == ["C0", "C3", "C4", "C1"]
+    assert picked == ["C0", "C4", "C3", "C1"]  # escalate and benign typologies alternate
 
 
 def test_metrics():

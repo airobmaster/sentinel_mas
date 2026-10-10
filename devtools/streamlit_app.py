@@ -20,7 +20,7 @@ import sys
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pandas as pd
 import streamlit as st
@@ -145,7 +145,7 @@ html, body, .stApp, .stMarkdown, p, li, label, input, textarea, button, h1, h2, 
 
 
 def now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def duration(seconds: float | None) -> str:
@@ -376,6 +376,16 @@ def usage_table(timed: list[tuple[str, dict]]) -> str:
             f'<tr class="total"><td>Total</td>{cells(total)}</tr></table>')
 
 
+def trace_url(case_id: str) -> str:
+    """Grafana Explore on Tempo, filtered to the case's spans."""
+    pane = {"datasource": "tempo", "queries": [{"refId": "A", "datasource": {"type": "tempo", "uid": "tempo"},
+                                                "queryType": "traceql", "query": f'{{ span.sentinel.case_id = "{case_id}" }}'}],
+            "range": {"from": "now-7d", "to": "now"}}
+    from urllib.parse import quote
+
+    return f"{settings.grafana_url}/explore?schemaVersion=1&orgId=1&panes={quote(json.dumps({'a': pane}))}"
+
+
 def for_display(values: dict) -> dict:
     """Agents' outputs carry PII tokens; investigators see the real values unless they choose not to."""
     if not state.get("show_pii", True):
@@ -500,6 +510,8 @@ def render_case(alert: dict, status: str | None, values: dict, packet: dict | No
         st.dataframe(pd.DataFrame(values.get("evidence", []), columns=["id", "agent", "source", "summary"]),
                      width="stretch", hide_index=True)
     with trace_tab:
+        if settings.otel_endpoint:  # every step, model and tool call of the case in Tempo
+            st.link_button("Traces in Grafana", trace_url(alert["case_id"]))
         earlier = len(events) - len(current_run(events))
         include = earlier and st.toggle(f"Include earlier runs ({earlier} events)", key=f"trace-all-{alert['case_id']}")
         st.dataframe(events_frame(events if include else current_run(events)), width="stretch", hide_index=True)

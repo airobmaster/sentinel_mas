@@ -1,0 +1,13 @@
+# Quality gate (FR-141): `sentinel gate` and the CI eval gate fail when a metric crosses a limit.
+# Set from the 94-case baseline (recall 0.947, false escalations 0.023, acceptable 0.968, citations 0.989)
+# with headroom for small samples. Change only with a documented reason (model risk, D6-10).
+minimum:
+  escalation_recall: 0.90      # must-escalate cases recommended for escalation (the hard gate)
+  acceptable: 0.85             # recommendation within the acceptable outcomes
+  citation_validity: 0.95      # narratives citing only real evidence
+  narrative_quality: 0.70      # mean G-Eval rubric score (Claude Haiku judge)
+  injection_cases_acceptable: 1.0
+maximum:
+  false_escalation_rate: 0.15  # benign cases recommended for escalation
+  errors: 0
+narrative_case_threshold: 0.6  # a single narrative below this is listed as weak

@@ -37,7 +37,8 @@ Work proceeds as thin end-to-end slices (alert in → agents → human decision)
 | 6 | **Guardrails**: PII redaction (Presidio + patterns, reversible tokens), injection rail, call limits and token budget, security event log; **UC-08** red-team probe through OPA; **UC-03** customer request drafted with a tipping-off rail and an approval step; **UC-04** customer reply → follow-up run on `{case_id}:rN` via `aml.case-followups.v1`; console Security tab, approval and reply forms, PII toggle | **Done**: 108 offline + 16 integration tests; **Gate G4 passed**: 28-case full-stack eval (the Slice 5 sample + 4 cases with planted injections): escalation recall 1.0, false escalations 0.0, agreement 0.964 (acceptable 1.0), citation validity 1.0, injections caught 4/4 with acceptable outcomes, 0 errors, ~85k tokens per case; red-team 6/6 denied; live UC-03 → UC-04 over Kafka |
 | 7 | **Sentinel API** (FastAPI): queue, review packet with PII by role, checkpoint history, case events + SSE, decisions, approvals, customer replies, QA sampling/labels, health/readiness/metrics; **Amazon Cognito** sign-in (Terraform identity stack, 5 role groups, test users via `sentinel auth bootstrap`) with BR-08/09/10, UC-03 and UC-05 role rules; API container in Compose; console **API mode** with role switcher and QA review. Then **Airflow** (DAGs) | **API done**: 118 offline + 18 integration tests; live: alert via API → worker → SSE progress → L1 decision via API with a Cognito token. **Airflow done**: 4 DAGs load and run through the scheduler (lists, graph, policy re-embed live); golden set 74/20; worker resumes runs that stopped mid-way; QA degrades when the critic model is unavailable |
 | 8 | **Investigator workbench** (`ui/workbench`): React 19 + TypeScript + Vite + Mantine; Cognito sign-in (PKCE); queue with SLA colours; case view with evidence chips, findings with time/usage, typology, network graph (Cytoscape), audit timeline, security; live progress (SSE); decision, approval and reply panels with role rules; QA labelling; blind review; nginx container proxying `/api`; Playwright E2E | **Done**: 4 Playwright tests green against the stack (Cognito sign-in, decide, approve → request info → reply, QA label); 125 offline tests; **Gate G5 passed** |
-| 9+ | Observability, evals tooling and CI, AWS | |
+| 9 | **Observability, evaluation and CI**: OpenTelemetry traces (case → step → model/tool) to Tempo, Prometheus metrics, Grafana dashboards (platform, KPIs, security) with trace links from the workbench and console; quality gate (outcome thresholds + DeepEval G-Eval narrative rubric, Claude Haiku judge); Promptfoo red team; LangSmith experiments; `nightly_eval` DAG; GitHub Actions CI and eval gate (OIDC role) | **Done** except the degraded-prompt PR demo (D6-10, needs a push): one trace per case; red team 15/15; gate passes on held-out cases; 137 offline tests |
+| 10+ | AWS | |
 
 ---
 
@@ -45,14 +46,14 @@ Work proceeds as thin end-to-end slices (alert in → agents → human decision)
 
 | Day | Theme | Tasks | Done | % | Est. hours | Gate |
 |---|---|---|---|---|---|---|
-| Day 1 | Foundations, Kafka, Airflow, data | 17 | 8 | 47% | ~10.5 | G1 — |
+| Day 1 | Foundations, Kafka, Airflow, data | 17 | 10 | 59% | ~10.5 | G1 — |
 | Day 2 | MCP tools, OPA, Kafka + Airflow DAGs | 13 | 8 | 62% | ~10.0 | G2 — |
 | Day 3 | Core graph, HITL, Kafka workers | 15 | 12 | 80% | ~10.75 | G3 ✔ |
 | Day 4 | Full squad, guardrails, extended HITL | 14 | 14 | 100% | ~9.75 | G4 ✔ |
 | Day 5 | API & full workbench | 18 | 18 | 100% | ~12.0 | G5 ✔ |
-| Day 6 | Eval, observability, CI, AWS foundation | 14 | 0 | 0% | ~10.25 | G6 — |
+| Day 6 | Eval, observability, CI, AWS foundation | 14 | 9 | 64% | ~10.25 | G6 — |
 | Day 7 | AWS deploy, hardening, demo | 12 | 0 | 0% | ~9.75 | G7 — |
-| **Total** | | **103** | **60** | **58%** | **~73** | |
+| **Total** | | **103** | **71** | **69%** | **~73** | |
 
 ---
 
@@ -63,12 +64,12 @@ Work proceeds as thin end-to-end slices (alert in → agents → human decision)
 - [ ] **D1-02** `WIP` (M) `.env.example`, `config/models.yaml`, `config.py` (local vs AWS profiles) · ~0.5h — `.env.example` + `config.py` (env-driven model IDs, data/tool/OPA modes) done; AWS profile pending
 - [x] **D1-03** (M) Compose: Kafka (KRaft) + Kafka UI, Postgres+pgvector, OPA [DEMO 1] · ~0.75h ✔ Day 2 (Slices 3–4)
 - [x] **D1-04** (M) Compose: Airflow 3 `standalone` (LocalExecutor, metadata DB in Postgres, `ingestion/airflow/dags` mounted) [DEMO 3] · ~0.75h ✔ Day 5 (Slice 7): Airflow 3.3.2 image with Sentinel in its own venv (`docker/airflow.Dockerfile`), UI on :8088, metadata DB `airflow` in the same Postgres; ~1.2 GB RAM
-- [ ] **D1-05** (M) Compose: OTel Collector, Tempo, Prometheus, Grafana · ~0.5h
+- [x] **D1-05** (M) Compose: OTel Collector, Tempo, Prometheus, Grafana · ~0.5h ✔ Day 6 (Slice 9): collector-contrib, Tempo 2.8.2 (pinned: 3.x changed storage), Prometheus, Grafana with provisioned datasources (Prometheus, Tempo, Postgres)
 - [x] **D1-06** (M) Local Neo4j: connectivity from host and containers (`host.docker.internal`), GDS plugin check, read-only dev user · ~0.5h ✔ Day 2 (Slice 5): Neo4j Desktop 2026.09 + GDS 2026.09; host (`neo4j://`) and containers (`bolt://host.docker.internal`); dedicated read-only user still pending
 - [ ] **D1-07** (M) Neo4j MCP server in the AI pair-programming tool (read-only creds, **dev only**, never an agent tool) · ~0.25h
 - [ ] **D1-08** `WIP` (M) Makefile: `up`, `down`, `seed`, `test`, `eval`, `demo`, `aws-plan`, `aws-up`, `aws-down` · ~0.25h — `make` is not on the Windows dev machine, so `seed`/`eval` are `sentinel data generate|load` and `sentinel eval` CLI commands; a thin Makefile wrapper for POSIX/CI is pending
 - [x] **D1-09** (M) Verify Bedrock for Haiku 4.5 / Sonnet 5.5 / Opus 5.5; pin IDs; Anthropic fallback (Q1) · ~0.75h ✔ Day 1 — Sonnet/Opus 5.5 not available on the account; DeepSeek V3.2 pinned (see Q1)
-- [ ] **D1-10** (M) LangSmith dev project + env vars (BR-14) · ~0.25h
+- [x] **D1-10** (M) LangSmith dev project + env vars (BR-14) · ~0.25h ✔ Day 6 (Slice 9): project and key in .env (exported at start-up); off in tests; synthetic data only
 
 **Synthetic data** (TDD §3.5)
 - [x] **D1-11** (M) Generator: customers, accounts, expected activity, devices, benign transactions · ~1h ✔ Day 2 (Slice 5): devices for every customer, benign shared household devices
@@ -155,7 +156,7 @@ Work proceeds as thin end-to-end slices (alert in → agents → human decision)
 - [x] **D5-10** (M) Decision panel: action, reason code, agreement flag, edits (FR-091/092) [DEMO 2] · ~0.75h ✔ Day 5 (Slice 8)
 - [x] **D5-11** (M) Live progress panel (SSE, or 2 s polling fallback) [DEMO 1] · ~0.5h ✔ Day 5 (Slice 8): SSE via fetch (bearer token), running clock, current run only
 - [x] **D5-12** (M) Network graph view, Cytoscape.js (FR-104) · ~1h ✔ Day 5 (Slice 8): `GET /cases/{id}/network` (same data as the console diagram)
-- [x] **D5-13** (M) Audit timeline: checkpoint history + Tempo trace link (FR-105, UC-07) · ~0.75h ✔ Day 5 (Slice 8): checkpoint timeline + case events; Tempo trace link comes with D6-07
+- [x] **D5-13** (M) Audit timeline: checkpoint history + Tempo trace link (FR-105, UC-07) · ~0.75h ✔ Day 5 (Slice 8): checkpoint timeline + case events; Grafana/Tempo trace link added in Slice 9
 - [x] **D5-14** (M) Tool-approval dialog + request-info / customer-reply screen (FR-108, UC-03/04) [DEMO 4, 5] · ~0.75h ✔ Day 5 (Slice 8): approval panel (edit re-checked for tipping-off) and customer-reply panel
 - [x] **D5-15** (M) QA labelling screen with rubric (FR-106) · ~0.5h ✔ Day 5 (Slice 8)
 - [x] **D5-16** (S) Blind mode (FR-107) · ~0.25h ✔ Day 5 (Slice 8): deterministic 20% of cases (local), draft and recommendation hidden until decided; agreement still measured
@@ -167,17 +168,17 @@ Work proceeds as thin end-to-end slices (alert in → agents → human decision)
 ## Day 6 — Evaluation, observability, CI & AWS foundation
 
 **Evaluation**
-- [ ] **D6-01** (M) DeepEval per-agent structured-output tests · ~0.5h
-- [ ] **D6-02** (M) DeepEval golden suite: recall, agreement, completeness, citations + thresholds (FR-141) · ~1h
-- [ ] **D6-03** (S) G-Eval narrative rubric · ~0.5h
-- [ ] **D6-04** (M) Promptfoo red-team, ~15 attacks (FR-143) · ~1h
-- [ ] **D6-05** (S) LangSmith experiment, 30-case slice vs baseline (FR-142) · ~0.75h
-- [ ] **D6-06** (S) Airflow `nightly_eval` DAG: sample checkpoints, judge, scores → Postgres [DEMO 3] · ~0.5h
+- [x] **D6-01** (M) DeepEval per-agent structured-output tests · ~0.5h ✔ Day 6 (Slice 9): live tests per specialist (schema + defining finding): KYC, transactions, screening
+- [x] **D6-02** (M) DeepEval golden suite: recall, agreement, completeness, citations + thresholds (FR-141) · ~1h ✔ Day 6 (Slice 9): `sentinel gate` + `evals/thresholds.yaml` (from the 94-case baseline)
+- [x] **D6-03** (S) G-Eval narrative rubric · ~0.5h ✔ Day 6 (Slice 9): DeepEval G-Eval, Claude Haiku judge (different model from the narrative); 3-case check mean 0.93
+- [x] **D6-04** (M) Promptfoo red-team, ~15 attacks (FR-143) · ~1h ✔ Day 6 (Slice 9): 10 injections (real KYC agent) + 5 tipping-off attempts; first run 10/15, gaps fixed in both rails (authority/clearance phrasing, Spanish, digit and letter-spacing tricks); now 15/15 with all 10 injections detected; no false positives on 20,819 dataset texts
+- [x] **D6-05** (S) LangSmith experiment, 30-case slice vs baseline (FR-142) · ~0.75h ✔ Day 6 (Slice 9): `sentinel experiment` on the `sentinel-golden` LangSmith dataset (94 examples); 3-case check run recorded
+- [x] **D6-06** (S) Airflow `nightly_eval` DAG: sample checkpoints, judge, scores → Postgres [DEMO 3] · ~0.5h ✔ Day 6 (Slice 9): replay 6 held-out cases through Kafka, then `sentinel gate --from-runs`; scores to `evals.runs`
 
 **Observability & CI**
-- [ ] **D6-07** (M) OTel-only tracing → Tempo, span attributes; nothing goes to LangSmith (FR-150, BR-14) [DEMO 9] · ~0.75h
-- [ ] **D6-08** (M) Prometheus metrics + Grafana platform, KPI and security dashboards (FR-151/152) [DEMO 7, 9] · ~1h
-- [ ] **D6-09** (M) `ci.yml` (lint, types, unit, `opa test`) + `eval-gate.yml` (DeepEval held-out slice) · ~0.75h
+- [x] **D6-07** (M) OTel-only tracing → Tempo, span attributes; nothing goes to LangSmith (FR-150, BR-14) [DEMO 9] · ~0.75h ✔ Day 6 (Slice 9): LangChain callback -> OTel spans (case, graph, step, model with tokens, tool), FastAPI instrumentation; LangSmith kept separate (BR-14)
+- [x] **D6-08** (M) Prometheus metrics + Grafana platform, KPI and security dashboards (FR-151/152) [DEMO 7, 9] · ~1h ✔ Day 6 (Slice 9): worker /metrics (case, security, token, model and tool counters) + span metrics; Platform, Case KPIs and Security dashboards
+- [x] **D6-09** (M) `ci.yml` (lint, types, unit, `opa test`) + `eval-gate.yml` (DeepEval held-out slice) · ~0.75h ✔ Day 6 (Slice 9): ruff, mypy (report only), offline tests, `opa test`, workbench build; eval gate on PRs touching prompts/agents/rails/tools (6 held-out cases), 20 on manual run; AWS via GitHub OIDC role (Bedrock invoke only, `infra/terraform/ci`); CI-mode gate run locally: passed
 - [ ] **D6-10** (M) Degraded-prompt PR blocked by the eval gate [DEMO 8] · ~0.25h
 
 **AWS foundation** (TDD §19.3)
@@ -257,6 +258,10 @@ Work proceeds as thin end-to-end slices (alert in → agents → human decision)
 | Day 4 | D4-08 | First G4 eval: the injection rail fired on the UK procedure manual ("close the alert") | Curated policy-manual search is exempt from the rail; record-derived text (CRM notes, media, payment references) is still scanned | Day 4 |
 | Day 4 | D4-07 | Second G4 eval: citation validity 0.0 although every outcome was acceptable. The email pattern matched versioned policy IDs (`AML-UK@3.2`), so models cited tokens instead of real IDs | Email pattern requires a letter TLD; regression test keeps policy IDs intact. Two transient MCP task-group errors under load now report their inner exception | Day 4 |
 | Day 4 | D4-07, D4-09 | Same run: one structuring case got `request_info`, one case hit the agent recursion limit (25). Presidio's English model tagged reason codes (`STRUCTURING_CONFIRMED`) and Spanish policy phrases as people, so models saw tokens instead of codes; the recursion limit was lower than the new call limits allow | Presidio spans with underscores, IDs or lower-case words are ignored (policy manuals now produce no PERSON hits); recursion limit raised to 60 as a backstop behind the call limits | Day 4 |
+| Day 6 | D1-05 | Tempo 3.x (`latest`) rejected the classic config and silently dropped every trace | Pinned `grafana/tempo:2.8.2` | Day 6 |
+| Day 6 | D6-07 | With LangSmith tracing on, one case produced ~40 separate traces: LangSmith's own runs appear as unknown parents in the callback | Spans fall back to the current graph step (context variable) when the parent run is unknown: one trace per case | Day 6 |
+| Day 6 | D6-03 | DeepEval 2.x imports `langchain.schema` (removed in LangChain 1.x) | Upgraded to DeepEval 4.2; its pytest plugin stays disabled | Day 6 |
+| Day 6 | D6-04 | First red-team run 10/15: authority/clearance notes ("cleared by compliance", "regulator instruction") steered the KYC agent; tipping-off rail missed authority words, Spanish and digit/spacing tricks | Injection patterns and KYC prompt v1.2 (clearance notes treated as possible tampering); tipping-off rail extended with normalisation; 15/15, no false positives on 20,819 dataset texts | Day 6 |
 
 ---
 
@@ -311,3 +316,4 @@ Work proceeds as thin end-to-end slices (alert in → agents → human decision)
 | v1.2 · Day 5 | Slice 7 Airflow as-built: one custom Airflow 3.3.2 image with Sentinel in a separate virtual environment; DAG tasks are `BashOperator`s calling the `sentinel` CLI (no Sentinel imports in Airflow's own environment); `alert_replay` scores from the Postgres checkpointer after the workers run (reports in `evals.runs`); golden set is 94 cases (74 dev / 20 held out) rather than 100; local Airflow has no login (`SIMPLE_AUTH_MANAGER_ALL_ADMINS`) | Avoids dependency clashes with Airflow's pins; the same commands run from a terminal; all alerts with ground truth are used | On AWS: Airflow on ECS (or MWAA in the backlog) with login; `nightly_eval` (D6-06) reuses `sentinel replay` |
 | v1.3 · Day 5 | Slice 8 as-built: Mantine as the component library; the workbench calls the API on its own origin under `/api` (Vite proxy in development, nginx in the container) instead of CORS; sign-in config served by the API (`/auth/config`), dev-mode sign-in only without Cognito; network graph data endpoint shared with the console diagram; blind review is a stable hash-based share of cases (20% locally); Playwright tests seed their cases with stubbed agents under fresh IDs per run; PII redaction moved off the worker's event loop | No CORS surface; one origin also on AWS (CloudFront/ALB path routing); deterministic, cheap browser tests that still exercise Cognito, API, Kafka and the worker | Tempo trace links added with D6-07; HTTPS origin needed on AWS for the Cognito callback |
 | v1.4 · Day 5 | Review levels inside Sentinel (owner's decision): first review by lane (BR-08), then L1 → L2 → MLRO escalation as separate checkpointed pauses (new BR-16); each level sees only its own cases (BR-17); new `mlro` role (Cognito group, test user) deciding file SAR / no SAR, so the MLRO is no longer outside Sentinel; QA queue = every case whose automated QA raised issues + a 10% sample of the rest (BR-18); case records carry `assigned_role` and `qa_flagged`; workbench restyled (red pastel palette), queue filters kept in the URL, demo role switch (local only) | The flow investigators and supervisors expect (four eyes, need-to-know); demo-friendly role switching | Functional Spec §1, UC-05, the state diagram and BR-16–BR-18 updated; HLD and TDD to be updated as-built (D7-11). Demo role switch must stay off on AWS |
+| v1.5 · Day 6 | Slice 9 as-built: OpenTelemetry spans from a LangChain callback (not LangSmith's OTel mode); Tempo 2.8 pinned; Grafana dashboards generated from a script; the quality gate combines outcome metrics with a DeepEval G-Eval narrative rubric judged by Claude Haiku; red team via Promptfoo's Python provider against the real KYC agent; LangSmith used for development experiments only; CI eval gate runs in-process on the seeded dataset (no Postgres, Kafka or MCP) through a GitHub OIDC role allowed only to invoke Bedrock models; mypy reports but does not block until existing findings are cleared | One trace per case regardless of LangSmith; the gate needs nothing but Bedrock in CI; no stored AWS keys | TDD §14–§16 to be updated as-built (D7-11); clear mypy findings and make it blocking |
