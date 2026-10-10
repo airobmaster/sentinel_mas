@@ -13,7 +13,7 @@ import argparse
 import asyncio
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from langgraph.types import Command
@@ -123,7 +123,7 @@ def accepted_decision(p: dict, investigator: str = "INV-0001") -> dict:
                     else ("file_sar", LEVEL_ACTIONS["mlro"]["file_sar"][0]))
     return {"action": action, "reason_code": code, "investigator_id": investigator,
             "agree_with_recommendation": level == "mlro" or action == p["recommendation"],
-            "decided_at": datetime.now(timezone.utc).isoformat()}
+            "decided_at": datetime.now(UTC).isoformat()}
 
 
 def ask_decision(p: dict) -> dict:
@@ -140,7 +140,7 @@ def ask_decision(p: dict) -> dict:
             "reason_code": code,
             "investigator_id": investigator,
             "agree_with_recommendation": action == p["recommendation"],
-            "decided_at": datetime.now(timezone.utc).isoformat(),
+            "decided_at": datetime.now(UTC).isoformat(),
         }
         try:
             validate_decision(decision, level)
@@ -150,6 +150,14 @@ def ask_decision(p: dict) -> dict:
 
 
 async def run(alert: dict, accept: bool) -> int:
+    """One case end to end in this process; one trace for the whole run, approvals and reviews included."""
+    from sentinel.telemetry import case_span
+
+    with case_span("sentinel.cli_run", alert["case_id"]):
+        return await _run(alert, accept)
+
+
+async def _run(alert: dict, accept: bool) -> int:
     graph = compile_graph()
     config = run_config(alert["case_id"])
     print(f"Running {alert['case_id']} ({alert['scenario_code']})")
@@ -309,13 +317,35 @@ async def kafka_tail(case_ids: set[str], from_beginning: bool) -> None:
 
 
 async def run_workers(kind: str, concurrency: int) -> None:
+    from prometheus_client import start_http_server
+
+    from sentinel import telemetry
     from sentinel.persistence import durable_state
     from sentinel.workers import HANDLERS, run_worker
+
+    telemetry.setup(f"sentinel-worker-{kind}")
+    start_http_server(settings.worker_metrics_port)  # Prometheus scrapes http://<host>:9464/metrics
 
     async with durable_state() as (checkpointer, cases):
         graph = compile_graph(checkpointer=checkpointer)
         print(f"worker '{kind}' consuming {list(HANDLERS[kind])} (concurrency {concurrency}); Ctrl+C to stop")
         await run_worker(graph, cases, HANDLERS[kind], concurrency)
+
+
+def run_gate(args) -> int:
+    from sentinel.evaluate import select_cases
+    from sentinel.quality import gate
+
+    cases = [c for c in args.cases.split(",") if c] if args.cases else select_cases(args.split, args.n)
+    print(f"gate: {len(cases)} case(s) from {args.split}: {', '.join(cases)}")
+    report = gate(cases, args.split, from_runs=args.from_runs, concurrency=args.concurrency)
+    print_eval(report)
+    for r in report["cases"]:
+        if "narrative_score" in r:
+            print(f"  {r['case_id']:<12} narrative {r['narrative_score']:.2f}  {r.get('narrative_reason', '')[:150]}")
+    verdict = report["gate"]
+    print("GATE PASSED" if verdict["passed"] else "GATE FAILED: " + "; ".join(verdict["failures"]))
+    return 0 if verdict["passed"] else 1
 
 
 def replay(args) -> int:
@@ -424,6 +454,19 @@ def main() -> None:
     redteam_p = sub.add_parser("redteam", help="Red-team probe: forged forbidden tool calls must be denied by OPA and logged")
     redteam_p.add_argument("--case", default="CASE-0001")
 
+    gate_p = sub.add_parser("gate", help="Quality gate: outcomes + narrative rubric vs evals/thresholds.yaml (exit 1 on failure)")
+    gate_p.add_argument("--split", choices=["dev", "holdout", "all"], default="holdout")
+    gate_p.add_argument("--n", type=int, default=6, help="Cases from the split, balanced across typologies")
+    gate_p.add_argument("--cases", help="Comma-separated case IDs instead of a split sample")
+    gate_p.add_argument("--from-runs", action="store_true", help="Score cases the workers already ran (no new runs)")
+    gate_p.add_argument("--concurrency", type=int, default=3)
+
+    exp_p = sub.add_parser("experiment", help="LangSmith experiment on a golden-set slice (development only)")
+    exp_p.add_argument("--split", choices=["dev", "holdout", "all"], default="dev")
+    exp_p.add_argument("--n", type=int, default=10)
+    exp_p.add_argument("--name", required=True, help="Experiment name prefix, e.g. narrative-v1.4")
+    exp_p.add_argument("--concurrency", type=int, default=3)
+
     api_p = sub.add_parser("api", help="Run the Sentinel API (http://localhost:8000/docs)")
     api_p.add_argument("--host", default="127.0.0.1")
     api_p.add_argument("--port", type=int, default=8000)
@@ -440,6 +483,10 @@ def main() -> None:
     worker_p.add_argument("--concurrency", type=int, default=4, help="Cases processed in parallel")
 
     args = parser.parse_args()
+    if args.command in ("run", "eval", "replay", "gate"):
+        from sentinel import telemetry
+
+        telemetry.setup(f"sentinel-{args.command}")
     if args.command == "run":
         if bool(args.alert) == bool(args.case):
             parser.error("give either an alert file or --case")
@@ -481,6 +528,12 @@ def main() -> None:
         print(f"Wrote {GOLDEN_PATH}: {len(golden['dev'])} dev, {len(golden['holdout'])} held out")
     elif args.command == "replay":
         sys.exit(replay(args))
+    elif args.command == "gate":
+        sys.exit(run_gate(args))
+    elif args.command == "experiment":
+        from sentinel.experiments import run as run_experiment
+
+        print(f"LangSmith experiment: {asyncio.run(run_experiment(args.split, args.n, args.name, args.concurrency))}")
     elif args.command == "eval":
         from sentinel.evaluate import evaluate
 

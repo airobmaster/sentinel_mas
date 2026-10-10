@@ -1,0 +1,5 @@
+# The Sentinel environment inside the Airflow image: the service set plus the evaluation tooling for the
+# nightly_eval DAG (DeepEval narrative judge).
+-r requirements-service.txt
+deepeval>=4.2
+pyyaml>=6.0

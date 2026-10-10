@@ -18,9 +18,8 @@ import sys
 import uuid
 
 import psycopg
-from psycopg.types.json import Jsonb
-
 from langgraph.types import Command
+from psycopg.types.json import Jsonb
 
 from sentinel import data
 from sentinel.config import settings

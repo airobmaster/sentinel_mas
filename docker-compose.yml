@@ -145,6 +145,7 @@ services:
       SENTINEL_COGNITO_DOMAIN: ${SENTINEL_COGNITO_DOMAIN:-}
       SENTINEL_API_DEV_SECRET: ${SENTINEL_API_DEV_SECRET:-dev-only-api-signing-key-not-for-production}
       SENTINEL_BLIND_MODE_PERCENT: ${SENTINEL_BLIND_MODE_PERCENT:-20}
+      SENTINEL_OTEL_ENDPOINT: http://otel-collector:4318
       # Local demo only: the workbench's role dropdown signs in as each test user (passwords from .env)
       SENTINEL_DEMO_ROLE_SWITCH: ${SENTINEL_DEMO_ROLE_SWITCH:-true}
       SENTINEL_COGNITO_TEST_USERS: ${SENTINEL_COGNITO_TEST_USERS:-{}}
@@ -185,6 +186,7 @@ services:
       AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "True"  # local only: no Airflow login
       # Sentinel CLI used by the tasks (data and evals mounted below)
       SENTINEL_HOME: /opt/sentinel-home
+      SENTINEL_OTEL_ENDPOINT: http://otel-collector:4318
       SENTINEL_DATA_BACKEND: postgres
       SENTINEL_PG_DSN: postgresql://sentinel:sentinel@postgres:5432/sentinel
       SENTINEL_KAFKA_BOOTSTRAP: kafka:29092
@@ -207,6 +209,44 @@ services:
       start_period: 90s
     restart: unless-stopped
 
+  # --- Observability: traces (OTel collector -> Tempo), metrics (Prometheus), dashboards (Grafana) ---
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes: ["./observability/otel-collector.yaml:/etc/otelcol/config.yaml:ro"]
+    ports: ["4317:4317", "4318:4318"]
+    depends_on: [tempo]
+    restart: unless-stopped
+
+  tempo:
+    image: grafana/tempo:2.8.2
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes: ["./observability/tempo.yaml:/etc/tempo.yaml:ro", "tempodata:/var/tempo"]
+    ports: ["3200:3200"]
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes: ["./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
+    ports: ["9090:9090"]
+    restart: unless-stopped
+
+  # Grafana at http://localhost:3000 (no login locally): Sentinel dashboards + Tempo trace search
+  grafana:
+    image: grafana/grafana:latest
+    ports: ["3000:3000"]
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on: [prometheus, tempo]
+    restart: unless-stopped
+
 volumes:
+  tempodata:
   pgdata:
   kafkadata:

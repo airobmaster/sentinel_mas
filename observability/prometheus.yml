@@ -1,0 +1,13 @@
+# Prometheus: the API and worker metrics, and the span metrics derived by the OTel collector.
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: sentinel-api
+    static_configs: [{ targets: ["api:8000"] }]
+  - job_name: sentinel-worker  # the Kafka workers run on the host until the AWS slice
+    static_configs: [{ targets: ["host.docker.internal:9464"] }]
+  - job_name: sentinel-traces
+    static_configs: [{ targets: ["otel-collector:8889"] }]
+  - job_name: prometheus
+    static_configs: [{ targets: ["localhost:9090"] }]

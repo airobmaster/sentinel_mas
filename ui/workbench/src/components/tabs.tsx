@@ -1,11 +1,11 @@
 // Case view tabs (FR-101, FR-105): review packet with clickable evidence chips, evidence pack, findings
 // per agent with time and usage, typology & policy, audit timeline, security.
 import {
-  Accordion, Alert, Badge, Card, Code, Drawer, Group, Indicator, List, ScrollArea, SegmentedControl, SimpleGrid, Stack,
+  Accordion, Alert, Badge, Button, Card, Code, Drawer, Group, Indicator, List, ScrollArea, SegmentedControl, SimpleGrid, Stack,
   Switch, Table, Text, TextInput, Timeline, Title,
 } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
-import { IconAlertTriangle, IconInfoCircle, IconShieldExclamation } from "@tabler/icons-react";
+import { IconAlertTriangle, IconInfoCircle, IconShieldExclamation, IconTimeline } from "@tabler/icons-react";
 import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
 
 import { api } from "../api";
@@ -238,8 +238,17 @@ export function TypologyTab({ view }: { view: CaseView }) {
 }
 
 // --- Audit timeline (UC-07) ----------------------------------------------------------------------
+/** Grafana Explore with Tempo, filtered to this case's traces (every run, step, model and tool call). */
+function traceLink(grafana: string, caseId: string): string {
+  const pane = { datasource: "tempo", queries: [{ refId: "A", datasource: { type: "tempo", uid: "tempo" },
+    queryType: "traceql", query: `{ span.sentinel.case_id = "${caseId}" }` }], range: { from: "now-7d", to: "now" } };
+  return `${grafana}/explore?schemaVersion=1&orgId=1&panes=${encodeURIComponent(JSON.stringify({ a: pane }))}`;
+}
+
 export function TimelineTab({ caseId, events }: { caseId: string; events: CaseEvent[] }) {
   const { data } = useQuery({ queryKey: ["history", caseId], queryFn: () => api.history(caseId) });
+  const { data: config } = useQuery({ queryKey: ["auth-config"], queryFn: api.authConfig, staleTime: Infinity });
+  const grafana = config?.grafana_url;
   const [all, setAll] = useState(false);
   const run = currentRun(events);
   const shown = (all ? events : run).slice().sort((a, b) => b.at.localeCompare(a.at));
@@ -247,7 +256,11 @@ export function TimelineTab({ caseId, events }: { caseId: string; events: CaseEv
     <SimpleGrid cols={{ base: 1, lg: 2 }} spacing="lg">
       <div>
         <Title order={5} mb="xs">Checkpoints · thread {data?.thread_id}</Title>
-        <Text size="xs" c="dimmed" mb="sm">Every step is saved; any point can be replayed for audit. Trace links to Tempo come with observability.</Text>
+        <Group justify="space-between" mb="sm">
+          <Text size="xs" c="dimmed">Every step is saved; any point can be replayed for audit.</Text>
+          {grafana && <Button component="a" href={traceLink(grafana, caseId)} target="_blank" size="xs" variant="light"
+                              leftSection={<IconTimeline size={14} />}>Traces in Grafana</Button>}
+        </Group>
         <Timeline active={(data?.checkpoints.length ?? 1) - 1} bulletSize={18} lineWidth={2}>
           {(data?.checkpoints ?? []).map((c) => (
             <Timeline.Item key={c.checkpoint_id}

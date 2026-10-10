@@ -14,18 +14,28 @@ replays safe. Messages for the same case in one batch are processed in order.
 import asyncio
 import logging
 from collections import defaultdict
-from typing import Awaitable, Callable
+from collections.abc import Awaitable, Callable
 
 from langgraph.types import Command
 from pydantic import ValidationError
 
 from sentinel.cli import describe_update
 from sentinel.config import settings
-from sentinel.events import (ALERTS_TOPIC, CASE_EVENTS_TOPIC, DECISIONS_TOPIC, DLQ_TOPIC, FOLLOWUPS_TOPIC,
-                             AlertEvent, CaseEvent, FollowUpEvent, parse_resume)
+from sentinel.events import (
+    ALERTS_TOPIC,
+    CASE_EVENTS_TOPIC,
+    DECISIONS_TOPIC,
+    DLQ_TOPIC,
+    FOLLOWUPS_TOPIC,
+    AlertEvent,
+    CaseEvent,
+    FollowUpEvent,
+    parse_resume,
+)
 from sentinel.graph import follow_up_state, follow_up_thread, initial_state, run_config
 from sentinel.hitl import REVIEW_NODES, WAITING_NODES, validate_approval, validate_decision
 from sentinel.persistence import STATUS_AFTER_DECISION
+from sentinel.telemetry import case_span, record_case_event
 
 log = logging.getLogger("sentinel.worker")
 
@@ -175,7 +185,8 @@ async def process_with_retries(handler, graph, msg, publish: Publish, cases, sen
     raw = msg.value.decode()
     for attempt in range(1, settings.worker_max_attempts + 1):
         try:
-            await handler(graph, raw, publish, cases)
+            with case_span(f"sentinel.{handler.__name__}", case_id, topic=msg.topic, attempt=attempt):
+                await handler(graph, raw, publish, cases)
             return
         except ValidationError as e:  # malformed message: retrying will not help
             error = f"invalid message: {e.errors()[0]['msg']}"
@@ -205,6 +216,7 @@ async def run_worker(graph, cases, handlers: dict, concurrency: int, stop: async
 
     async def publish(event: CaseEvent) -> None:
         await kafka.send(prod, CASE_EVENTS_TOPIC, event)
+        record_case_event(event.type, event.detail, event.data)
         log.info("%s %s %s", event.case_id, event.type, event.detail or event.data or "")
 
     async def send_dlq(source_topic: str, case_id: str, raw: str, error: str) -> None:

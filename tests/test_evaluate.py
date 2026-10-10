@@ -2,15 +2,18 @@ from sentinel.evaluate import metrics, stratified_sample
 
 
 def row(expected, acceptable, got, bad=0):
-    return {"expected": expected, "acceptable": acceptable, "recommendation": got, "bad_citations": bad, "seconds": 10}
+    return {"expected": expected, "acceptable": acceptable, "recommendation": got, "bad_citations": bad,
+            "citations": 5, "seconds": 10}
 
 
 def test_stratified_sample_covers_every_typology_first():
     alerts = [{"case_id": f"C{i}"} for i in range(6)]
-    truth = {"C0": {"typology": "A"}, "C1": {"typology": "A"}, "C2": {"typology": "A"},
-             "C3": {"typology": "B"}, "C4": {"typology": "C"}, "C5": {"typology": "C"}}
+    esc, close = "escalate", "close"
+    truth = {"C0": {"typology": "A", "expected": esc}, "C1": {"typology": "A", "expected": esc},
+             "C2": {"typology": "A", "expected": esc}, "C3": {"typology": "B", "expected": esc},
+             "C4": {"typology": "C", "expected": close}, "C5": {"typology": "C", "expected": close}}
     picked = [a["case_id"] for a in stratified_sample(alerts, truth, 4)]
-    assert picked == ["C0", "C3", "C4", "C1"]
+    assert picked == ["C0", "C4", "C3", "C1"]  # escalate and benign typologies alternate
 
 
 def test_metrics():
@@ -27,4 +30,4 @@ def test_metrics():
     assert m["escalation_recall"] == 0.5
     assert m["false_escalation_rate"] == 0.5
     assert m["agreement"] == 0.4 and m["acceptable"] == 0.6
-    assert m["citation_validity"] == 0.8
+    assert m["citation_validity"] == 0.96  # 1 bad of 25 citations

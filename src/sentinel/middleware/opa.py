@@ -15,7 +15,7 @@ from sentinel.guardrails.events import record
 log = logging.getLogger("sentinel.security")
 
 # Case context for policy decisions, set per specialist run (see agents/factory.py).
-CASE_CONTEXT: ContextVar[dict] = ContextVar("sentinel_case_context", default={})
+CASE_CONTEXT: ContextVar[dict] = ContextVar("sentinel_case_context", default={})  # noqa: B039 - read only
 
 
 OPA_ATTEMPTS = 2  # one retry for transient connection errors; still fails closed after that

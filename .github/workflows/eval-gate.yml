@@ -1,0 +1,57 @@
+name: Eval gate
+
+# Runs held-out golden cases through the real agents on Bedrock and fails when an outcome metric or the
+# narrative rubric falls below evals/thresholds.yaml. Manual only (Actions -> Eval gate -> Run workflow):
+# it calls Bedrock, and small samples are noisy, so it does not run on every pull request. AWS access is through
+# GitHub OIDC (infra/terraform/ci): repository variables AWS_ROLE_ARN and AWS_REGION, no stored keys.
+
+on:
+  workflow_dispatch:
+    inputs:
+      n:
+        description: Held-out cases (20 = the whole held-out split)
+        type: number
+        default: 20
+
+permissions:
+  contents: read
+  id-token: write # GitHub OIDC token for the AWS role
+
+concurrency:
+  group: eval-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: Quality gate (held-out cases)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      SENTINEL_DATA_BACKEND: json
+      SENTINEL_TOOL_MODE: local
+      SENTINEL_AWS_REGION: ${{ vars.AWS_REGION }}
+      LANGSMITH_TRACING: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-ci.txt
+      - run: pip install -r requirements-ci.txt -e .
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: sentinel-eval-gate
+      - name: Synthetic dataset (seeded)
+        run: sentinel data generate
+      - name: Gate
+        run: sentinel gate --split holdout --n ${{ inputs.n }}
+      - name: Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-gate-report
+          path: evals/results/
+          if-no-files-found: ignore

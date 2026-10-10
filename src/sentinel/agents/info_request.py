@@ -17,7 +17,7 @@ MAX_ATTEMPTS = 2
 async def draft_info_request(state: CaseState) -> dict:
     spec = get_specialist("customer_request", settings.model_narrative, "customer_request", CustomerInfoRequest)
     feedback, events, usage, vault = "", [], {}, {}
-    for attempt in range(1, MAX_ATTEMPTS + 1):
+    for attempt in range(1, MAX_ATTEMPTS + 1):  # noqa: B007 - reported after the loop
         draft, _, run = await run_specialist(spec, brief_for("customer_request", state) + feedback, state)
         events, usage, vault = add_events(events, run.security_events), add_usage(usage, run.usage), run.pii_vault
         violations = check_customer_text(" ".join([draft.message, *draft.questions]))

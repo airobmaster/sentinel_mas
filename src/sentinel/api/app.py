@@ -17,13 +17,19 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, s
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from sse_starlette.sse import EventSourceResponse
 
-from sentinel.api.auth import (REVIEW_LEVELS, ROLES, TEST_USERS, Principal, current_user, dev_token, issuer, require,
-                               token_for)
+from sentinel.api.auth import REVIEW_LEVELS, ROLES, TEST_USERS, Principal, current_user, dev_token, issuer, require, token_for
 from sentinel.api.backend import Backend, live_backend
 from sentinel.api.models import ApprovalIn, DecisionIn, DevTokenIn, QALabel, ReplyIn
 from sentinel.config import settings
-from sentinel.events import (ALERTS_TOPIC, DECISIONS_TOPIC, FOLLOWUPS_TOPIC, AlertEvent, ApprovalEvent,
-                             DecisionEvent, FollowUpEvent)
+from sentinel.events import (
+    ALERTS_TOPIC,
+    DECISIONS_TOPIC,
+    FOLLOWUPS_TOPIC,
+    AlertEvent,
+    ApprovalEvent,
+    DecisionEvent,
+    FollowUpEvent,
+)
 from sentinel.graph import run_config
 from sentinel.guardrails.pii import PiiVault
 from sentinel.hitl import recommendation_of, validate_approval, validate_decision
@@ -82,9 +88,15 @@ def create_app(backend: Backend | None = None) -> FastAPI:
             app.state.backend = live
             yield
 
-    app = FastAPI(title="Sentinel API", version="0.7.0", lifespan=lifespan,
+    from sentinel import telemetry
+
+    if telemetry.setup("sentinel-api"):
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+    app = FastAPI(title="Sentinel API", version="0.9.0", lifespan=lifespan,
                   description="AML investigation cases: queue, review packets, decisions, approvals, "
                               "customer replies, live progress and QA labels.")
+    if telemetry.setup("sentinel-api"):
+        FastAPIInstrumentor.instrument_app(app, excluded_urls="healthz,readyz,metrics")
 
     @app.middleware("http")
     async def metrics(request: Request, call_next):
@@ -139,10 +151,11 @@ def create_app(backend: Backend | None = None) -> FastAPI:
     async def auth_config():
         """Public sign-in settings for the workbench (none are secrets): it configures itself from these."""
         if settings.auth_mode == "dev":
-            return {"mode": "dev", "roles": list(ROLES), "demo_role_switch": True}
+            return {"mode": "dev", "roles": list(ROLES), "demo_role_switch": True, "grafana_url": settings.grafana_url}
         return {"mode": "cognito", "region": settings.aws_region, "user_pool_id": settings.cognito_user_pool_id,
                 "client_id": settings.cognito_workbench_client_id, "domain": settings.cognito_domain,
-                "authority": issuer(), "demo_role_switch": settings.demo_role_switch}
+                "authority": issuer(), "demo_role_switch": settings.demo_role_switch,
+                "grafana_url": settings.grafana_url}
 
     @app.post("/auth/demo-sign-in", tags=["auth"])
     async def demo_sign_in(body: DevTokenIn):
