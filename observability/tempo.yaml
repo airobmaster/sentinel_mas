@@ -7,7 +7,7 @@ distributor:
   receivers:
     otlp:
       protocols:
-        grpc: { endpoint: 0.0.0.0:4317 }
+        grpc: { endpoint: "0.0.0.0:${TEMPO_OTLP_PORT:-4317}" }  # 4327 on AWS (shares a task with the collector)
 
 ingester:
   max_block_duration: 5m

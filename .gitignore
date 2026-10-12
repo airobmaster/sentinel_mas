@@ -140,3 +140,6 @@ ehthumbs.db
 .claude/settings.local.json
 ui/workbench/e2e/.cases.json
 evals/promptfoo/results.json
+
+# Local demo guide (shared directly, not versioned)
+docs/Demo_Guide.html

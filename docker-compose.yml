@@ -220,7 +220,7 @@ services:
 
   tempo:
     image: grafana/tempo:2.8.2
-    command: ["-config.file=/etc/tempo.yaml"]
+    command: ["-config.file=/etc/tempo.yaml", "-config.expand-env=true"]
     volumes: ["./observability/tempo.yaml:/etc/tempo.yaml:ro", "tempodata:/var/tempo"]
     ports: ["3200:3200"]
     restart: unless-stopped
@@ -240,6 +240,12 @@ services:
       GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
       GF_AUTH_DISABLE_LOGIN_FORM: "true"
       GF_SECURITY_ALLOW_EMBEDDING: "true"
+      PROMETHEUS_URL: http://prometheus:9090
+      TEMPO_URL: http://tempo:3200
+      SENTINEL_DB_HOST: postgres:5432
+      SENTINEL_DB_USER: sentinel
+      SENTINEL_DB_PASSWORD: sentinel
+      SENTINEL_DB_SSLMODE: disable
     volumes:
       - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro

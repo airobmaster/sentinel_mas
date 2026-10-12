@@ -68,6 +68,7 @@ class Settings(BaseSettings):
     kafka_bootstrap: str = "localhost:9092"
     kafka_security: Literal["plaintext", "msk_iam"] = "plaintext"
     kafka_partitions: int = 6
+    kafka_replication: int = 1  # MSK Serverless requires 3
     worker_max_attempts: int = 2  # per message, on top of node-level retries; then the DLQ
 
     # Business rules

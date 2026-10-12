@@ -15,6 +15,7 @@ pgvector>=0.3
 neo4j>=5.20
 networkx>=3.3
 rapidfuzz>=3.9
+faker>=28.0                         # synthetic dataset, regenerated from its seed in the images
 fastapi>=0.115
 uvicorn[standard]>=0.30
 sse-starlette>=2.1

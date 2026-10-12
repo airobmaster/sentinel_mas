@@ -21,7 +21,7 @@ connectors:
 
 exporters:
   otlp_grpc/tempo:
-    endpoint: tempo:4317
+    endpoint: ${env:TEMPO_OTLP_ENDPOINT:-tempo:4317}
     tls: { insecure: true }
   prometheus:
     endpoint: 0.0.0.0:8889

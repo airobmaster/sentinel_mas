@@ -1,21 +1,22 @@
+# Addresses and the database login come from the environment (docker-compose.yml locally, ECS on AWS).
 apiVersion: 1
 datasources:
   - name: Prometheus
     uid: prometheus
     type: prometheus
-    url: http://prometheus:9090
+    url: ${PROMETHEUS_URL}
     isDefault: true
   - name: Tempo
     uid: tempo
     type: tempo
-    url: http://tempo:3200
+    url: ${TEMPO_URL}
     jsonData:
       tracesToMetrics: { datasourceUid: prometheus }
       serviceMap: { datasourceUid: prometheus }
   - name: Sentinel cases
     uid: postgres
     type: grafana-postgresql-datasource
-    url: postgres:5432
-    user: sentinel
-    secureJsonData: { password: sentinel }
-    jsonData: { database: sentinel, sslmode: disable, postgresVersion: 1600 }
+    url: ${SENTINEL_DB_HOST}
+    user: ${SENTINEL_DB_USER}
+    secureJsonData: { password: "${SENTINEL_DB_PASSWORD}" }
+    jsonData: { database: sentinel, sslmode: "${SENTINEL_DB_SSLMODE}", postgresVersion: 1600 }

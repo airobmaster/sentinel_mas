@@ -14,7 +14,7 @@ from sentinel.events import CASE_EVENTS_TOPIC, TOPICS
 
 
 class MskIamTokenProvider(AbstractTokenProvider):
-    """OAUTHBEARER tokens for MSK Serverless IAM auth (used on AWS; not exercised locally)."""
+    """OAUTHBEARER tokens for MSK Serverless IAM auth (on AWS; credentials from the ECS task role)."""
 
     async def token(self) -> str:
         from aws_msk_iam_sasl_signer import MSKAuthTokenProvider
@@ -64,7 +64,7 @@ async def create_topics() -> list[str]:
     try:
         missing = [t for t in TOPICS if t not in set(await admin.list_topics())]
         if missing:
-            await admin.create_topics([NewTopic(t, settings.kafka_partitions, 1) for t in missing])
+            await admin.create_topics([NewTopic(t, settings.kafka_partitions, settings.kafka_replication) for t in missing])
     finally:
         await admin.close()
     return missing
