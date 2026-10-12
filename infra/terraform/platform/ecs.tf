@@ -37,7 +37,7 @@ locals {
     SENTINEL_AWS_REGION                  = var.region
     SENTINEL_ENVIRONMENT                 = "aws"
     SENTINEL_DATA_BACKEND                = "postgres"
-    SENTINEL_PG_POOL_SIZE                  = "3"
+    SENTINEL_PG_POOL_SIZE                = "3"
     SENTINEL_TOOL_MODE                   = "mcp"
     SENTINEL_MCP_URLS                    = jsonencode({ for s in local.mcp_servers : s => "http://mcp-${replace(s, "_", "-")}.${local.namespace}:8000/mcp/" })
     SENTINEL_KAFKA_BOOTSTRAP             = "kafka.${local.namespace}:9092"
@@ -54,8 +54,8 @@ locals {
     SENTINEL_COGNITO_DOMAIN              = local.cognito.domain
     SENTINEL_GRAFANA_URL                 = local.urls.grafana
     SENTINEL_BLIND_MODE_PERCENT          = "20"
-    SENTINEL_DEMO_ROLE_SWITCH            = "false" # never on a shared deployment
-    LANGSMITH_TRACING                    = "false" # BR-14: no LangSmith outside development
+    SENTINEL_DEMO_ROLE_SWITCH            = tostring(var.demo_role_switch) # demo only: behind the IP allow-list
+    LANGSMITH_TRACING                    = "false"                        # BR-14: no LangSmith outside development
   }
   sentinel_secrets = {
     SENTINEL_PG_DSN         = "pg_dsn"
@@ -68,7 +68,7 @@ locals {
     AWS_REGION              = var.region
     SENTINEL_AWS_REGION     = var.region
     SENTINEL_DATA_BACKEND   = "postgres"
-    SENTINEL_PG_POOL_SIZE     = "3"
+    SENTINEL_PG_POOL_SIZE   = "3"
     SENTINEL_NEO4J_URI      = var.neo4j_uri
     SENTINEL_NEO4J_USER     = var.neo4j_user
     SENTINEL_NEO4J_DATABASE = local.neo4j_database
@@ -86,7 +86,8 @@ locals {
       api = {
         cpu = 512, memory = 1024, role = "api", lb = null
         containers = [{ name = "api", image = local.img.sentinel, command = ["api", "--host", "0.0.0.0", "--port", "8000"],
-        port = 8000, env = local.sentinel_env, secrets = local.sentinel_secrets }]
+          port = 8000, env = local.sentinel_env, secrets = local.sentinel_secrets,
+        whole_secrets = var.demo_role_switch ? { SENTINEL_COGNITO_TEST_USERS = aws_secretsmanager_secret.demo_users.arn } : {} }]
       }
       worker = {
         cpu = 1024, memory = 2048, role = "agents", lb = null
@@ -179,7 +180,8 @@ locals {
           essential    = true
           portMappings = [{ containerPort = c.port, protocol = "tcp" }]
           environment  = [for k, v in c.env : { name = k, value = v }]
-          secrets      = [for k, v in c.secrets : { name = k, valueFrom = "${local.secret}:${v}::" }]
+          secrets = concat([for k, v in c.secrets : { name = k, valueFrom = "${local.secret}:${v}::" }],
+          [for k, v in try(c.whole_secrets, {}) : { name = k, valueFrom = v }])
           logConfiguration = {
             logDriver = "awslogs"
             options = {

@@ -50,6 +50,19 @@ locals {
   db_host = aws_db_instance.main.address
 }
 
+# Cognito test-user passwords for the workbench role switch (demo only), kept apart so they can change
+# without regenerating the database password
+resource "aws_secretsmanager_secret" "demo_users" {
+  name                    = "${var.name}/demo-users"
+  recovery_window_in_days = 0
+}
+
+resource "aws_secretsmanager_secret_version" "demo_users" {
+  secret_id                = aws_secretsmanager_secret.demo_users.id
+  secret_string_wo         = var.cognito_test_users == null ? "{}" : var.cognito_test_users
+  secret_string_wo_version = var.demo_users_version
+}
+
 resource "aws_secretsmanager_secret_version" "app" {
   secret_id = aws_secretsmanager_secret.app.id
   secret_string_wo = jsonencode({

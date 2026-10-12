@@ -36,6 +36,26 @@ variable "neo4j_password" {
   default     = null
 }
 
+variable "demo_role_switch" {
+  description = "Workbench 'View as' role switch (signs in as each test user). Only behind the IP allow-list"
+  type        = bool
+  default     = false
+}
+
+variable "cognito_test_users" {
+  description = "JSON username -> password of the Cognito test users, for the role switch (write-only)"
+  type        = string
+  sensitive   = true
+  ephemeral   = true
+  default     = null
+}
+
+variable "demo_users_version" {
+  description = "Bump to write new test-user passwords to Secrets Manager"
+  type        = number
+  default     = 1
+}
+
 variable "secrets_version" {
   description = "Bump to write new generated passwords and the Neo4j password to Aurora and Secrets Manager"
   type        = number
