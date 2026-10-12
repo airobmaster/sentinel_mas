@@ -6,6 +6,8 @@ from decimal import Decimal
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
+from sentinel.config import settings
+
 
 def clean(row: dict) -> dict:
     """Match the JSON backend: ISO date strings and float amounts."""
@@ -23,7 +25,7 @@ TXN_COLUMNS = (
 
 class PostgresRepo:
     def __init__(self, dsn: str):
-        self.pool = ConnectionPool(dsn, min_size=1, max_size=8, kwargs={"row_factory": dict_row}, open=True)
+        self.pool = ConnectionPool(dsn, min_size=1, max_size=settings.pg_pool_size, kwargs={"row_factory": dict_row}, open=True)
 
     def _all(self, sql: str, params: tuple = ()) -> list[dict]:
         with self.pool.connection() as conn:

@@ -38,7 +38,7 @@ Work proceeds as thin end-to-end slices (alert in → agents → human decision)
 | 7 | **Sentinel API** (FastAPI): queue, review packet with PII by role, checkpoint history, case events + SSE, decisions, approvals, customer replies, QA sampling/labels, health/readiness/metrics; **Amazon Cognito** sign-in (Terraform identity stack, 5 role groups, test users via `sentinel auth bootstrap`) with BR-08/09/10, UC-03 and UC-05 role rules; API container in Compose; console **API mode** with role switcher and QA review. Then **Airflow** (DAGs) | **API done**: 118 offline + 18 integration tests; live: alert via API → worker → SSE progress → L1 decision via API with a Cognito token. **Airflow done**: 4 DAGs load and run through the scheduler (lists, graph, policy re-embed live); golden set 74/20; worker resumes runs that stopped mid-way; QA degrades when the critic model is unavailable |
 | 8 | **Investigator workbench** (`ui/workbench`): React 19 + TypeScript + Vite + Mantine; Cognito sign-in (PKCE); queue with SLA colours; case view with evidence chips, findings with time/usage, typology, network graph (Cytoscape), audit timeline, security; live progress (SSE); decision, approval and reply panels with role rules; QA labelling; blind review; nginx container proxying `/api`; Playwright E2E | **Done**: 4 Playwright tests green against the stack (Cognito sign-in, decide, approve → request info → reply, QA label); 125 offline tests; **Gate G5 passed** |
 | 9 | **Observability, evaluation and CI**: OpenTelemetry traces (case → step → model/tool) to Tempo, Prometheus metrics, Grafana dashboards (platform, KPIs, security) with trace links from the workbench and console; quality gate (outcome thresholds + DeepEval G-Eval narrative rubric, Claude Haiku judge); Promptfoo red team; LangSmith experiments; `nightly_eval` DAG; GitHub Actions CI and eval gate (OIDC role) | **Done** (degraded-prompt PR demo D6-10 cut; eval gate manual): one trace per case; red team 15/15; gate passes on held-out cases; 137 offline tests |
-| 10+ | AWS | |
+| 10 | **AWS deployment** (Free plan): ECS Fargate (API, worker + OPA, 6 MCP, Presidio, Kafka, workbench, Airflow, observability), RDS PostgreSQL, AuraDB Free, CloudFront + ALB with IP allow-list, Secrets Manager, release/up/bootstrap/down scripts, `deploy.yml` | Stack applied; CASE-0001 end to end on AWS; dashboards and traces live |
 
 ---
 
@@ -51,9 +51,9 @@ Work proceeds as thin end-to-end slices (alert in → agents → human decision)
 | Day 3 | Core graph, HITL, Kafka workers | 15 | 12 | 80% | ~10.75 | G3 ✔ |
 | Day 4 | Full squad, guardrails, extended HITL | 14 | 14 | 100% | ~9.75 | G4 ✔ |
 | Day 5 | API & full workbench | 18 | 18 | 100% | ~12.0 | G5 ✔ |
-| Day 6 | Eval, observability, CI, AWS foundation | 14 | 9 | 64% | ~10.25 | G6 — |
-| Day 7 | AWS deploy, hardening, demo | 12 | 0 | 0% | ~9.75 | G7 — |
-| **Total** | | **103** | **71** | **69%** | **~73** | |
+| Day 6 | Eval, observability, CI, AWS foundation | 14 | 12 | 86% | ~10.25 | G6 — |
+| Day 7 | AWS deploy, hardening, demo | 12 | 2 | 17% | ~9.75 | G7 — |
+| **Total** | | **103** | **76** | **74%** | **~73** | |
 
 ---
 
@@ -182,9 +182,9 @@ Work proceeds as thin end-to-end slices (alert in → agents → human decision)
 - [ ] **D6-10** `CUT` (M) Degraded-prompt PR blocked by the eval gate [DEMO 8] · ~0.25h — owner's decision: the gate stays a manual quality check; 6-case PR runs were too noisy (one missed escalation = recall 0.5)
 
 **AWS foundation** (TDD §19.3)
-- [ ] **D6-11** (M) Production Dockerfiles for all services; CI builds and pushes images to ECR · ~0.75h
-- [ ] **D6-12** (M) Terraform: network (VPC, NAT, VPC endpoints), ECR, Secrets Manager, IAM (task roles, GitHub OIDC deploy role); check service quotas · ~1.25h
-- [ ] **D6-13** (M) Terraform: Aurora Serverless v2 (pgvector) + MSK Serverless; **apply**; prototype the MSK IAM token provider · ~1h
+- [x] **D6-11** (M) Production Dockerfiles for all services; CI builds and pushes images to ECR · ~0.75h ✔ Day 7 (Slice 10): sentinel (API, worker, tasks), mcp, workbench, airflow and ops images (OPA, collector, Tempo, Prometheus, Grafana with config baked in); `infra/aws/release.sh` builds and pushes to ECR
+- [x] **D6-12** (M) Terraform: network (VPC, NAT, VPC endpoints), ECR, Secrets Manager, IAM (task roles, GitHub OIDC deploy role); check service quotas · ~1.25h ✔ Day 7 (Slice 10): `infra/terraform/platform`: VPC (1 NAT, S3 endpoint), ECR, one Secrets Manager secret written with write-only arguments, task roles (Bedrock for agents only), GitHub OIDC deploy role
+- [x] **D6-13** (M) Terraform: Aurora Serverless v2 (pgvector) + MSK Serverless; **apply**; prototype the MSK IAM token provider · ~1h ✔ Day 7 (Slice 10), adapted: the account is on the AWS Free plan, which blocks MSK and Aurora Serverless, so RDS PostgreSQL 16 (db.t4g.micro, pgvector) and a single-node Kafka on ECS; applied
 - [ ] **D6-14** (M) **Gate G6:** `make eval` passes; regression PR blocked; dashboards live; Aurora/MSK/ECR applied · ~0.25h
 
 ---
@@ -192,10 +192,10 @@ Work proceeds as thin end-to-end slices (alert in → agents → human decision)
 ## Day 7 — AWS deploy, hardening & demo
 
 **AWS** [DEMO 10]
-- [ ] **D7-01** (M) Terraform ECS: cluster, Cloud Map, services (api, worker + OPA sidecar, 6 MCP, airflow, workbench, observability), ALB with IP allow-list · ~1.5h
-- [ ] **D7-02** (M) MSK IAM auth live, topic-init task; Neo4j AWS target per Q7 (`networkx` scores); migration + seed task · ~0.75h
-- [ ] **D7-03** (M) `deploy.yml`: GitHub OIDC → ECR → ECS service update · ~0.75h
-- [ ] **D7-04** (M) AWS smoke test: `alert_replay` → case → approval → decision in the workbench. **mid-day contingency checkpoint** (roadmap §5) · ~0.75h
+- [x] **D7-01** (M) Terraform ECS: cluster, Cloud Map, services (api, worker + OPA sidecar, 6 MCP, airflow, workbench, observability), ALB with IP allow-list · ~1.5h ✔ Day 7 (Slice 10): 14 ECS services on Cloud Map (`*.sentinel.internal`), Kafka included; ALB behind CloudFront (HTTPS, IP allow-list via CloudFront Function, shared origin header)
+- [x] **D7-02** (M) MSK IAM auth live, topic-init task; Neo4j AWS target per Q7 (`networkx` scores); migration + seed task · ~0.75h ✔ Day 7 (Slice 10): AuraDB Free (database named after the instance) with networkx scores; `infra/aws/bootstrap.sh` one-off task: Airflow DB, topics, data load, policy embeddings, graph
+- [ ] **D7-03** `WIP` (M) `deploy.yml`: GitHub OIDC → ECR → ECS service update · ~0.75h — `deploy.yml` and the deploy role exist; first run from GitHub pending
+- [ ] **D7-04** `WIP` (M) AWS smoke test: `alert_replay` → case → approval → decision in the workbench. **mid-day contingency checkpoint** (roadmap §5) · ~0.75h — CASE-0001 ran on AWS (Kafka → worker → Bedrock → awaiting review), read through CloudFront with a Cognito token; trace in Tempo; Prometheus targets up. Workbench decision made by the owner on CASE-0001; demo role switch enabled on AWS (IP allow-listed, test-user passwords in Secrets Manager)
 
 **Hardening**
 - [ ] **D7-05** (M) Crash test: stop the worker task mid-case → resumes from checkpoint (NFR-03) · ~0.5h
@@ -233,8 +233,8 @@ Work proceeds as thin end-to-end slices (alert in → agents → human decision)
 | Q4 | GitHub remote for Actions | D1-01 | **Answered** | Yes |
 | Q5 | Kafka / Airflow / AWS / extended HITL / extra screens in scope? | — | **Answered** | Yes, all needed for the demo |
 | Q6 | AWS target | D6-12 | **Answered** | Managed-lite (TDD §19.3) |
-| Q7 | Neo4j on AWS: AuraDB Free (recommended) or Neo4j on ECS + EFS? | D6-12 | Open | |
-| Q8 | AWS account, region (`eu-west-1`?) and demo budget confirmed? | D6-12 | Partly answered | Account in use with `aws login`, region `eu-west-2`; demo budget still open |
+| Q7 | Neo4j on AWS: AuraDB Free (recommended) or Neo4j on ECS + EFS? | D6-12 | **Answered** | AuraDB Free; networkx scores (no GDS) |
+| Q8 | AWS account, region (`eu-west-1`?) and demo budget confirmed? | D6-12 | **Answered** | Region `eu-west-2`; stack up for the demo, then destroyed; account on the AWS Free plan ($100 credits), so no MSK or Aurora Serverless |
 
 ---
 
@@ -262,6 +262,9 @@ Work proceeds as thin end-to-end slices (alert in → agents → human decision)
 | Day 6 | D6-07 | With LangSmith tracing on, one case produced ~40 separate traces: LangSmith's own runs appear as unknown parents in the callback | Spans fall back to the current graph step (context variable) when the parent run is unknown: one trace per case | Day 6 |
 | Day 6 | D6-03 | DeepEval 2.x imports `langchain.schema` (removed in LangChain 1.x) | Upgraded to DeepEval 4.2; its pytest plugin stays disabled | Day 6 |
 | Day 6 | D6-04 | First red-team run 10/15: authority/clearance notes ("cleared by compliance", "regulator instruction") steered the KYC agent; tipping-off rail missed authority words, Spanish and digit/spacing tricks | Injection patterns and KYC prompt v1.2 (clearance notes treated as possible tampering); tipping-off rail extended with normalisation; 15/15, no false positives on 20,819 dataset texts | Day 6 |
+| Day 7 | D6-13 | The AWS account is on the Free plan: MSK is not available (`SubscriptionRequiredException`) and Aurora needs the restricted express configuration | Owner's decision: stay on the Free plan. RDS PostgreSQL (db.t4g.micro, pgvector) and single-node Kafka on ECS instead; Terraform otherwise unchanged | Day 7 |
+| Day 7 | D7-02 | AuraDB Free: "database 'neo4j' does not exist"; new instances name the database after the instance ID | `SENTINEL_NEO4J_DATABASE` derived from the AuraDB address | Day 7 |
+| Day 7 | D7-02 | Free-tier database allows ~80 connections; six MCP servers with 8-connection pools could exhaust it | Pool size configurable (`SENTINEL_PG_POOL_SIZE`), 3 on AWS | Day 7 |
 
 ---
 
@@ -317,3 +320,4 @@ Work proceeds as thin end-to-end slices (alert in → agents → human decision)
 | v1.3 · Day 5 | Slice 8 as-built: Mantine as the component library; the workbench calls the API on its own origin under `/api` (Vite proxy in development, nginx in the container) instead of CORS; sign-in config served by the API (`/auth/config`), dev-mode sign-in only without Cognito; network graph data endpoint shared with the console diagram; blind review is a stable hash-based share of cases (20% locally); Playwright tests seed their cases with stubbed agents under fresh IDs per run; PII redaction moved off the worker's event loop | No CORS surface; one origin also on AWS (CloudFront/ALB path routing); deterministic, cheap browser tests that still exercise Cognito, API, Kafka and the worker | Tempo trace links added with D6-07; HTTPS origin needed on AWS for the Cognito callback |
 | v1.4 · Day 5 | Review levels inside Sentinel (owner's decision): first review by lane (BR-08), then L1 → L2 → MLRO escalation as separate checkpointed pauses (new BR-16); each level sees only its own cases (BR-17); new `mlro` role (Cognito group, test user) deciding file SAR / no SAR, so the MLRO is no longer outside Sentinel; QA queue = every case whose automated QA raised issues + a 10% sample of the rest (BR-18); case records carry `assigned_role` and `qa_flagged`; workbench restyled (red pastel palette), queue filters kept in the URL, demo role switch (local only) | The flow investigators and supervisors expect (four eyes, need-to-know); demo-friendly role switching | Functional Spec §1, UC-05, the state diagram and BR-16–BR-18 updated; HLD and TDD to be updated as-built (D7-11). Demo role switch must stay off on AWS |
 | v1.5 · Day 6 | Slice 9 as-built: OpenTelemetry spans from a LangChain callback (not LangSmith's OTel mode); Tempo 2.8 pinned; Grafana dashboards generated from a script; the quality gate combines outcome metrics with a DeepEval G-Eval narrative rubric judged by Claude Haiku; red team via Promptfoo's Python provider against the real KYC agent; LangSmith used for development experiments only; CI eval gate runs in-process on the seeded dataset (no Postgres, Kafka or MCP) through a GitHub OIDC role allowed only to invoke Bedrock models; mypy reports but does not block until existing findings are cleared | One trace per case regardless of LangSmith; the gate needs nothing but Bedrock in CI; no stored AWS keys | TDD §14–§16 to be updated as-built (D7-11); clear mypy findings and make it blocking |
+| v1.6 · Day 7 | Slice 10 as-built (AWS Free plan): RDS PostgreSQL instead of Aurora Serverless v2 and Kafka on ECS (KRaft, single node, topics auto-created after a restart) instead of MSK Serverless; no interface endpoints (NAT only, cost); CloudFront in front of the ALB for HTTPS without a domain, with a CloudFront Function IP allow-list and an origin header the ALB checks; observability in one ECS task with configs baked into images; region eu-west-2 | Free plan restrictions; HTTPS required by the Cognito callback; demo cost (~$8–12/day) | On a paid plan the design's Aurora + MSK can be restored (the Kafka client already supports MSK IAM). TDD §19.3 to be updated as-built (D7-11) |

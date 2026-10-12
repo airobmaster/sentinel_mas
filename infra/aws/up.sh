@@ -16,6 +16,9 @@ export TF_VAR_allowed_ips="$ALLOWED"
 export TF_VAR_neo4j_uri="$(env_value SENTINEL_NEO4J_AURA_URI)"
 export TF_VAR_neo4j_user="$(env_value SENTINEL_NEO4J_AURA_USER)"
 export TF_VAR_neo4j_password="$(env_value SENTINEL_NEO4J_AURA_PASSWORD)"
+# Workbench "View as" role switch: on by default for the demo (the site is IP allow-listed); DEMO_ROLE_SWITCH=false turns it off
+export TF_VAR_demo_role_switch="${DEMO_ROLE_SWITCH:-true}"
+export TF_VAR_cognito_test_users="$(env_value SENTINEL_COGNITO_TEST_USERS)"
 [[ -n "$TF_VAR_neo4j_uri" && -n "$TF_VAR_neo4j_password" ]] || { echo "Set the SENTINEL_NEO4J_AURA_* values in .env"; exit 1; }
 
 "$TF" -chdir=infra/terraform/platform init -input=false >/dev/null

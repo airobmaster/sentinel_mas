@@ -1,4 +1,4 @@
-# Aurora Serverless v2 (PostgreSQL 16 + pgvector) and MSK Serverless (IAM auth), private subnets only.
+# Database and secrets, private subnets only.
 
 ephemeral "random_password" "db" {
   length  = 32
@@ -16,46 +16,28 @@ resource "aws_db_subnet_group" "main" {
   subnet_ids = aws_subnet.private[*].id
 }
 
-resource "aws_rds_cluster" "main" {
-  cluster_identifier         = var.name
-  engine                     = "aurora-postgresql"
-  engine_mode                = "provisioned"
-  engine_version             = "16.15"
-  database_name              = "sentinel"
-  master_username            = "sentinel"
-  master_password_wo         = ephemeral.random_password.db.result
-  master_password_wo_version = var.secrets_version
-  db_subnet_group_name       = aws_db_subnet_group.main.name
-  vpc_security_group_ids     = [aws_security_group.data.id]
-  storage_encrypted          = true
-  skip_final_snapshot        = true # demo stack, destroyed after the demo
-  deletion_protection        = false
-  backup_retention_period    = 1
-  serverlessv2_scaling_configuration {
-    min_capacity = 0.5
-    max_capacity = 4
-  }
-}
-
-resource "aws_rds_cluster_instance" "main" {
-  identifier         = "${var.name}-1"
-  cluster_identifier = aws_rds_cluster.main.id
-  instance_class     = "db.serverless"
-  engine             = aws_rds_cluster.main.engine
-  engine_version     = aws_rds_cluster.main.engine_version
-}
-
-resource "aws_msk_serverless_cluster" "main" {
-  cluster_name = var.name
-  vpc_config {
-    subnet_ids         = aws_subnet.private[*].id
-    security_group_ids = [aws_security_group.data.id]
-  }
-  client_authentication {
-    sasl {
-      iam { enabled = true }
-    }
-  }
+# RDS PostgreSQL 16 on the free-tier instance class (the account is on the AWS Free plan, which blocks
+# Aurora Serverless and MSK). pgvector is available as an extension. Kafka runs on ECS (ecs.tf).
+resource "aws_db_instance" "main" {
+  identifier              = var.name
+  engine                  = "postgres"
+  engine_version          = "16"
+  instance_class          = "db.t4g.micro"
+  allocated_storage       = 20
+  storage_type            = "gp3"
+  db_name                 = "sentinel"
+  username                = "sentinel"
+  password_wo             = ephemeral.random_password.db.result
+  password_wo_version     = var.secrets_version
+  db_subnet_group_name    = aws_db_subnet_group.main.name
+  vpc_security_group_ids  = [aws_security_group.data.id]
+  publicly_accessible     = false
+  multi_az                = false
+  storage_encrypted       = true
+  skip_final_snapshot     = true # demo stack, destroyed after the demo
+  deletion_protection     = false
+  backup_retention_period = 0
+  apply_immediately       = true
 }
 
 # One secret, injected into the containers by key. Written with write-only arguments: not in the state.
@@ -65,7 +47,20 @@ resource "aws_secretsmanager_secret" "app" {
 }
 
 locals {
-  db_host = aws_rds_cluster.main.endpoint
+  db_host = aws_db_instance.main.address
+}
+
+# Cognito test-user passwords for the workbench role switch (demo only), kept apart so they can change
+# without regenerating the database password
+resource "aws_secretsmanager_secret" "demo_users" {
+  name                    = "${var.name}/demo-users"
+  recovery_window_in_days = 0
+}
+
+resource "aws_secretsmanager_secret_version" "demo_users" {
+  secret_id                = aws_secretsmanager_secret.demo_users.id
+  secret_string_wo         = var.cognito_test_users == null ? "{}" : var.cognito_test_users
+  secret_string_wo_version = var.demo_users_version
 }
 
 resource "aws_secretsmanager_secret_version" "app" {
