@@ -1,0 +1,14 @@
+# Prometheus on AWS (ECS observability task): API and workers found through Cloud Map DNS, the
+# OTel collector's span metrics on localhost (same task).
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: sentinel-api
+    dns_sd_configs: [{ names: ["api.sentinel.internal"], type: A, port: 8000 }]
+  - job_name: sentinel-worker
+    dns_sd_configs: [{ names: ["worker.sentinel.internal"], type: A, port: 9464 }]
+  - job_name: sentinel-traces
+    static_configs: [{ targets: ["localhost:8889"] }]
+  - job_name: prometheus
+    static_configs: [{ targets: ["localhost:9090"] }]

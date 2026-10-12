@@ -1,0 +1,34 @@
+name: Deploy
+
+# Builds the images, pushes them to ECR and rolls the ECS services (infra/aws/release.sh). Manual, while
+# the AWS stack exists (it is created for the demo and destroyed afterwards). AWS access through GitHub
+# OIDC: repository variable AWS_DEPLOY_ROLE_ARN (output of infra/terraform/platform).
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: Image to rebuild (all, sentinel, mcp, workbench, airflow, ops)
+        default: all
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: sentinel-deploy
+      - name: Build, push and roll out
+        run: bash infra/aws/release.sh "${{ inputs.image }}"

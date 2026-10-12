@@ -1,10 +1,15 @@
 # Workbench container: static app + /api proxied to the API (server-sent events need buffering off).
+# API_UPSTREAM and DNS_RESOLVER are filled in at start (nginx image templates): api:8000 and Docker's DNS
+# locally, the Cloud Map name and the VPC resolver on AWS. Resolving per request survives API restarts.
 server {
     listen 80;
     root /usr/share/nginx/html;
+    resolver ${DNS_RESOLVER} valid=10s ipv6=off;
 
     location /api/ {
-        proxy_pass http://api:8000/;
+        set $api ${API_UPSTREAM};
+        rewrite ^/api/(.*)$ /$1 break;
+        proxy_pass http://$api;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header Connection "";

@@ -110,6 +110,7 @@ echo   Workbench http://localhost:5173   ^(sign in with a Cognito test user^)
 echo   API       http://localhost:8000/docs
 echo   Airflow   http://localhost:8088
 echo   Kafka UI  http://localhost:8080
+echo   Grafana   http://localhost:3000   ^(dashboards and traces^)
 echo   Worker    "Sentinel worker" window
 exit /b 0
 

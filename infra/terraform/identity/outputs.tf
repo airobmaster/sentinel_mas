@@ -12,3 +12,13 @@ output "env" {
 output "issuer" {
   value = "https://cognito-idp.${var.region}.amazonaws.com/${aws_cognito_user_pool.sentinel.id}"
 }
+
+# Read by the platform stack (infra/terraform/platform) for the API's Cognito settings
+output "cognito" {
+  value = {
+    user_pool_id        = aws_cognito_user_pool.sentinel.id
+    tools_client_id     = aws_cognito_user_pool_client.tools.id
+    workbench_client_id = aws_cognito_user_pool_client.workbench.id
+    domain              = "https://${aws_cognito_user_pool_domain.sentinel.domain}.auth.${var.region}.amazoncognito.com"
+  }
+}
