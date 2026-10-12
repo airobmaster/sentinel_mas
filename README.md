@@ -418,6 +418,8 @@ The demo deployment (`infra/terraform/platform`) mirrors the local stack on **EC
 infra/aws/release.sh      # build the images and push them to ECR
 infra/aws/up.sh           # create or update the stack; adds the AWS workbench to Cognito
 infra/aws/bootstrap.sh    # first time: Airflow DB, Kafka topics, data, policy embeddings, AuraDB graph
+infra/aws/pause.sh        # between demos: services to 0 and the database stopped (~$2/day; same URLs and data)
+infra/aws/resume.sh       # before a demo: start everything again (5-10 minutes) and print the URLs
 infra/aws/down.sh         # destroy everything billed by the hour (Cognito and the CI roles stay)
 ```
 
