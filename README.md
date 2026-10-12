@@ -421,7 +421,7 @@ infra/aws/bootstrap.sh    # first time: Airflow DB, Kafka topics, data, policy e
 infra/aws/down.sh         # destroy everything billed by the hour (Cognito and the CI roles stay)
 ```
 
-`up.sh` reads `SENTINEL_NEO4J_AURA_URI`, `SENTINEL_NEO4J_AURA_USER` and `SENTINEL_NEO4J_AURA_PASSWORD` from `.env` and allows this machine's IP (add more with `EXTRA_IPS`). It prints the three HTTPS addresses. After a code change, run `release.sh` again, or **Actions → Deploy** on GitHub (repository variable `AWS_DEPLOY_ROLE_ARN`). The account is on the AWS Free plan, which blocks Aurora Serverless and MSK, so the stack uses RDS PostgreSQL and a Kafka container instead (the design's managed services work unchanged on a paid plan). Cost: roughly $8–12 per day while it exists.
+`up.sh` reads `SENTINEL_NEO4J_AURA_URI`, `SENTINEL_NEO4J_AURA_USER` and `SENTINEL_NEO4J_AURA_PASSWORD` from `.env` and allows this machine's IP (add more with `EXTRA_IPS`). The workbench's **View as** role switch is on by default, since only allow-listed machines can reach the site (`DEMO_ROLE_SWITCH=false` turns it off); the test-user passwords go to Secrets Manager, not the Terraform state. It prints the three HTTPS addresses. After a code change, run `release.sh` again, or **Actions → Deploy** on GitHub (repository variable `AWS_DEPLOY_ROLE_ARN`). The account is on the AWS Free plan, which blocks Aurora Serverless and MSK, so the stack uses RDS PostgreSQL and a Kafka container instead (the design's managed services work unchanged on a paid plan). Cost: roughly $8–12 per day while it exists.
 
 ---
 
