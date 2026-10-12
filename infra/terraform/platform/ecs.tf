@@ -27,7 +27,9 @@ locals {
     grafana   = "https://${aws_cloudfront_distribution.app["grafana"].domain_name}"
     airflow   = "https://${aws_cloudfront_distribution.app["airflow"].domain_name}"
   }
-  mcp_servers = ["case_mgmt", "kyc_profile", "txn_history", "screening", "graph_query", "policy_kb"]
+  # AuraDB Free names the database after the instance (the first label of the address), not "neo4j"
+  neo4j_database = split(".", split("://", var.neo4j_uri)[1])[0]
+  mcp_servers    = ["case_mgmt", "kyc_profile", "txn_history", "screening", "graph_query", "policy_kb"]
 
   # Settings shared by the Sentinel processes (API, workers, Airflow tasks, one-off tasks)
   sentinel_env = {
@@ -35,16 +37,16 @@ locals {
     SENTINEL_AWS_REGION                  = var.region
     SENTINEL_ENVIRONMENT                 = "aws"
     SENTINEL_DATA_BACKEND                = "postgres"
+    SENTINEL_PG_POOL_SIZE                  = "3"
     SENTINEL_TOOL_MODE                   = "mcp"
     SENTINEL_MCP_URLS                    = jsonencode({ for s in local.mcp_servers : s => "http://mcp-${replace(s, "_", "-")}.${local.namespace}:8000/mcp/" })
-    SENTINEL_KAFKA_BOOTSTRAP             = aws_msk_serverless_cluster.main.bootstrap_brokers_sasl_iam
-    SENTINEL_KAFKA_SECURITY              = "msk_iam"
-    SENTINEL_KAFKA_REPLICATION           = "3"
+    SENTINEL_KAFKA_BOOTSTRAP             = "kafka.${local.namespace}:9092"
     SENTINEL_KAFKA_PARTITIONS            = "3"
     SENTINEL_OTEL_ENDPOINT               = "http://observability.${local.namespace}:4318"
     SENTINEL_PRESIDIO_URL                = "http://presidio.${local.namespace}:3000"
     SENTINEL_NEO4J_URI                   = var.neo4j_uri
     SENTINEL_NEO4J_USER                  = var.neo4j_user
+    SENTINEL_NEO4J_DATABASE              = local.neo4j_database
     SENTINEL_AUTH_MODE                   = "cognito"
     SENTINEL_COGNITO_USER_POOL_ID        = local.cognito.user_pool_id
     SENTINEL_COGNITO_TOOLS_CLIENT_ID     = local.cognito.tools_client_id
@@ -63,11 +65,13 @@ locals {
     SENTINEL_NEO4J_PASSWORD = "neo4j_password"
   }
   mcp_env = {
-    AWS_REGION            = var.region
-    SENTINEL_AWS_REGION   = var.region
-    SENTINEL_DATA_BACKEND = "postgres"
-    SENTINEL_NEO4J_URI    = var.neo4j_uri
-    SENTINEL_NEO4J_USER   = var.neo4j_user
+    AWS_REGION              = var.region
+    SENTINEL_AWS_REGION     = var.region
+    SENTINEL_DATA_BACKEND   = "postgres"
+    SENTINEL_PG_POOL_SIZE     = "3"
+    SENTINEL_NEO4J_URI      = var.neo4j_uri
+    SENTINEL_NEO4J_USER     = var.neo4j_user
+    SENTINEL_NEO4J_DATABASE = local.neo4j_database
   }
   mcp_secrets = {
     SENTINEL_PG_DSN         = "pg_dsn"
@@ -91,6 +95,30 @@ locals {
           env = merge(local.sentinel_env, { SENTINEL_OPA_URL = "http://localhost:8181" }), secrets = local.sentinel_secrets },
           { name = "opa", image = local.img.opa, port = 8181, env = {}, secrets = {} },
         ]
+      }
+      # Single-node Kafka (KRaft), as in docker-compose.yml. Topics are created by bootstrap.sh and
+      # recreated automatically if the task restarts (messages are not kept across restarts).
+      kafka = {
+        cpu = 512, memory = 1024, role = "plain", lb = null
+        containers = [{
+          name = "kafka", image = "apache/kafka:3.9.1", port = 9092, secrets = {}
+          env = {
+            KAFKA_NODE_ID                                  = "1"
+            KAFKA_PROCESS_ROLES                            = "broker,controller"
+            KAFKA_LISTENERS                                = "PLAINTEXT://:9092,CONTROLLER://:9093"
+            KAFKA_ADVERTISED_LISTENERS                     = "PLAINTEXT://kafka.${local.namespace}:9092"
+            KAFKA_LISTENER_SECURITY_PROTOCOL_MAP           = "PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT"
+            KAFKA_CONTROLLER_LISTENER_NAMES                = "CONTROLLER"
+            KAFKA_CONTROLLER_QUORUM_VOTERS                 = "1@localhost:9093"
+            KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR         = "1"
+            KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR = "1"
+            KAFKA_TRANSACTION_STATE_LOG_MIN_ISR            = "1"
+            KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS         = "0"
+            KAFKA_AUTO_CREATE_TOPICS_ENABLE                = "true"
+            KAFKA_NUM_PARTITIONS                           = "3"
+            KAFKA_HEAP_OPTS                                = "-Xmx512m -Xms512m"
+          }
+        }]
       }
       presidio = {
         cpu        = 512, memory = 2048, role = "plain", lb = null

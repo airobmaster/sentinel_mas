@@ -47,6 +47,7 @@ class Settings(BaseSettings):
         REPO_ROOT / "data" / "generated" / "dataset.json",  # from `sentinel data generate`; optional
     ]
     pg_dsn: str = "postgresql://sentinel:sentinel@localhost:5432/sentinel"
+    pg_pool_size: int = 8  # data-access pool per process (smaller on AWS: the free-tier database allows ~80 connections)
 
     # Tools: "local" runs them in-process; "mcp" calls the MCP servers over HTTP.
     tool_mode: Literal["local", "mcp"] = "local"

@@ -49,32 +49,17 @@ resource "aws_iam_role_policy" "execution_secret" {
   })
 }
 
-# Task roles: "agents" (Bedrock + Kafka: workers, Airflow, one-off tasks, policy KB embeddings),
-# "api" (Kafka only), "plain" (nothing: MCP data servers, workbench, Presidio, observability)
+# Task roles: "agents" (Bedrock: workers, Airflow, one-off tasks, policy KB embeddings),
+# "api" and "plain" (no AWS permissions: API, MCP data servers, workbench, Kafka, Presidio, observability)
 locals {
-  msk_arn = aws_msk_serverless_cluster.main.arn
-  msk_statement = {
-    Effect = "Allow"
-    Action = [
-      "kafka-cluster:Connect", "kafka-cluster:DescribeCluster",
-      "kafka-cluster:CreateTopic", "kafka-cluster:DescribeTopic", "kafka-cluster:DescribeTopicDynamicConfiguration",
-      "kafka-cluster:ReadData", "kafka-cluster:WriteData", "kafka-cluster:WriteDataIdempotently",
-      "kafka-cluster:AlterGroup", "kafka-cluster:DescribeGroup",
-    ]
-    Resource = [
-      local.msk_arn,
-      "${replace(local.msk_arn, ":cluster/", ":topic/")}/*",
-      "${replace(local.msk_arn, ":cluster/", ":group/")}/*",
-    ]
-  }
   bedrock_statement = {
     Effect   = "Allow"
     Action   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
     Resource = ["arn:aws:bedrock:*::foundation-model/*", "arn:aws:bedrock:*:${local.account_id}:inference-profile/*"]
   }
   task_policies = {
-    agents = [local.msk_statement, local.bedrock_statement]
-    api    = [local.msk_statement]
+    agents = [local.bedrock_statement]
+    api    = []
     plain  = []
   }
 }

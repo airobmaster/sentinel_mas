@@ -85,8 +85,7 @@ Sentinel is being built in thin end-to-end slices, each tested before the next w
 - **The investigator workbench** (React): Cognito sign-in, a work queue with SLA colours, the case view (evidence pack with clickable evidence chips, findings with time and usage per agent, typology and policy, network graph, audit timeline, security), live progress, the decision, approval and customer-reply panels, QA labelling, and blind review.
 - **Tests:** offline, integration (Docker stack), live (Bedrock) and browser end-to-end (Playwright), plus a Streamlit test console for developers.
 
-**Planned**
-- Deployment to AWS.
+- **AWS deployment:** ECS Fargate services, RDS PostgreSQL with pgvector, Kafka, Neo4j AuraDB, Bedrock; HTTPS through CloudFront with an IP allow-list; created and destroyed with Terraform for demos.
 
 ---
 
@@ -163,17 +162,17 @@ Each case is one run of a LangGraph `StateGraph`. The run is checkpointed, so it
 | Local stack | Docker Compose | In use |
 | Language & tooling | Python, pytest (offline, integration and live suites), pydantic-settings | In use |
 | Test console | Streamlit (developer tool only, not deployed) | In use |
-| Event streaming | Apache Kafka (KRaft) + Kafka UI: alerts in, decisions back, case events out, dead-letter queue; `aiokafka` workers; MSK IAM auth switch for AWS | In use |
+| Event streaming | Apache Kafka (KRaft) + Kafka UI: alerts in, decisions back, case events out, dead-letter queue; `aiokafka` workers; MSK IAM auth switch (unused on the Free plan) | In use |
 | Durable runs | LangGraph `AsyncPostgresSaver`: cases pause for days at human review and survive restarts | In use |
 | Scheduling | Apache Airflow 3 (LocalExecutor, metadata in Postgres): alert replay, list refresh, graph rebuild, policy re-embedding | In use |
 | Documents | Docling for PDF/Word policy manuals (Markdown manuals are chunked directly today) | Planned |
 | Guardrails | Presidio analyzer (PII names) with pattern matching and reversible tokens; prompt-injection and tipping-off rails; LangChain call-limit middleware and a per-case token budget | In use |
 | API | FastAPI with server-sent events and Prometheus metrics; Amazon Cognito sign-in (role groups) | In use |
-| Infrastructure as code | Terraform (Cognito user pool now; network, data and compute stacks with the AWS slice) | In use |
+| Infrastructure as code | Terraform: identity (Cognito), ci (GitHub OIDC roles), platform (network, database, ECS, edge) | In use |
 | UI | Investigator workbench: React 19, TypeScript, Vite, Mantine, TanStack Query, oidc-client-ts (Cognito sign-in with PKCE), Cytoscape.js; served by nginx; Playwright end-to-end tests | In use |
 | Evaluation tooling | Quality gate with DeepEval G-Eval narrative rubric (Claude Haiku judge) and thresholds; Promptfoo red team (15 attacks); LangSmith experiments on the golden set; nightly evaluation DAG | In use |
 | Observability | OpenTelemetry (a LangChain callback turns each case run into spans: steps, model calls with tokens, tool calls) → collector → Tempo; Prometheus metrics from the API, workers and span metrics; Grafana dashboards (platform, case KPIs, security) | In use |
-| Cloud | AWS: ECS Fargate, MSK Serverless, Aurora Serverless v2, Bedrock | Planned |
+| Cloud | AWS: ECS Fargate, RDS PostgreSQL, CloudFront + ALB, Secrets Manager, Cloud Map, CloudWatch Logs, Bedrock; Neo4j AuraDB Free | In use |
 
 ---
 
@@ -411,6 +410,19 @@ SENTINEL_LIVE=1 pytest -m live          # end to end against Bedrock, including 
 - **`eval-gate.yml`**, run manually (Actions → Eval gate → Run workflow): runs held-out golden cases (20 by default) through the real agents on Bedrock and fails if `sentinel gate` fails. The report is attached to the run. It is not run on every pull request: it calls Bedrock, and a handful of cases is too few for stable recall figures.
 - AWS access uses **GitHub OIDC**, with no stored keys: `infra/terraform/ci` creates a role that only workflows from this repository can assume and that can only invoke Bedrock models. Set the repository variables `AWS_ROLE_ARN` (the Terraform output) and `AWS_REGION` (`eu-west-2`).
 
+### Run on AWS
+
+The demo deployment (`infra/terraform/platform`) mirrors the local stack on **ECS Fargate**: API, workers (with an OPA sidecar), the six MCP servers, Presidio, Kafka, the workbench, Airflow and the observability task (OTel collector, Tempo, Prometheus, Grafana). Data lives in **RDS PostgreSQL** (pgvector) and **Neo4j AuraDB Free**; agents call **Bedrock** with the worker's task role. The workbench, Grafana and Airflow are served over HTTPS by **CloudFront**, open only to the IP addresses allowed at deploy time; the ALB accepts only CloudFront. Passwords are generated at deploy time and kept out of the Terraform state.
+
+```bash
+infra/aws/release.sh      # build the images and push them to ECR
+infra/aws/up.sh           # create or update the stack; adds the AWS workbench to Cognito
+infra/aws/bootstrap.sh    # first time: Airflow DB, Kafka topics, data, policy embeddings, AuraDB graph
+infra/aws/down.sh         # destroy everything billed by the hour (Cognito and the CI roles stay)
+```
+
+`up.sh` reads `SENTINEL_NEO4J_AURA_URI`, `SENTINEL_NEO4J_AURA_USER` and `SENTINEL_NEO4J_AURA_PASSWORD` from `.env` and allows this machine's IP (add more with `EXTRA_IPS`). It prints the three HTTPS addresses. After a code change, run `release.sh` again, or **Actions → Deploy** on GitHub (repository variable `AWS_DEPLOY_ROLE_ARN`). The account is on the AWS Free plan, which blocks Aurora Serverless and MSK, so the stack uses RDS PostgreSQL and a Kafka container instead (the design's managed services work unchanged on a paid plan). Cost: roughly $8–12 per day while it exists.
+
 ---
 
 ## Repository structure
@@ -442,8 +454,9 @@ src/sentinel/
 mcp_servers/          # FastMCP servers (case_mgmt, kyc_profile, txn_history, screening) + Dockerfile
 guardrails/opa/       # Rego policy, agent tool allow-list, policy tests
 docker-compose.yml    # local stack: Postgres, Kafka + UI, OPA, Presidio, MCP servers, API
-docker/               # images: Sentinel service (API; workers on AWS) and Airflow with Sentinel
-infra/terraform/      # AWS infrastructure: identity (Cognito)
+docker/               # images: Sentinel service (API, workers, tasks), Airflow, workbench, ops (OPA, observability)
+infra/terraform/      # AWS infrastructure: identity (Cognito), ci (GitHub OIDC), platform (the demo stack)
+infra/aws/            # release, up, bootstrap and down scripts
 ingestion/airflow/dags/  # Airflow DAGs (batch jobs)
 evals/datasets/       # golden set (dev / held-out split)
 devtools/             # Streamlit test console (developer tool)

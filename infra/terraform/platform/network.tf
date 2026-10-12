@@ -1,4 +1,4 @@
-# VPC over two AZs: public subnets (ALB, NAT gateway), private subnets (tasks, Aurora, MSK).
+# VPC over two AZs: public subnets (ALB, NAT gateway), private subnets (tasks, database).
 # One NAT gateway (cost) for Bedrock, Cognito keys, AuraDB and image pulls; S3 through a free gateway endpoint.
 
 resource "aws_vpc" "main" {
@@ -125,17 +125,11 @@ resource "aws_security_group" "tasks" {
 
 resource "aws_security_group" "data" {
   name        = "${var.name}-data"
-  description = "Aurora and MSK: from the ECS tasks"
+  description = "PostgreSQL: from the ECS tasks"
   vpc_id      = aws_vpc.main.id
   ingress {
     from_port       = 5432
     to_port         = 5432
-    protocol        = "tcp"
-    security_groups = [aws_security_group.tasks.id]
-  }
-  ingress {
-    from_port       = 9098
-    to_port         = 9098
     protocol        = "tcp"
     security_groups = [aws_security_group.tasks.id]
   }
