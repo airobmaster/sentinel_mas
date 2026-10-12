@@ -1,2 +1,4 @@
 # Windows batch files must keep CRLF line endings (labels and goto break with LF).
 *.bat text eol=crlf
+# Shell scripts run in bash (Git Bash, GitHub Actions): keep LF line endings
+*.sh text eol=lf
