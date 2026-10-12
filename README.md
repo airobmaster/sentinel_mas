@@ -387,7 +387,7 @@ cd evals/promptfoo && npx promptfoo@latest eval                 # red team (resu
 
 | DAG | Schedule | What it does |
 |---|---|---|
-| `alert_replay` | on demand (choose the split and number of cases) | the replay above: select → publish → wait for review → score |
+| `alert_replay` | on demand (named cases, e.g. `CASE-0001,CASE-0002,CASE-0003`, or a split and number of cases) | the replay above: select → publish → wait for review → score |
 | `sanctions_refresh` | daily 05:00 | reloads the sanctions and PEP lists in one transaction (`sentinel data lists`) |
 | `graph_rebuild` | daily 05:30 | reloads the customer network into Neo4j and recomputes mule scores (`sentinel data graph`) |
 | `policy_reembed` | on demand | re-embeds the policy manuals with Bedrock (`sentinel data kb`) |

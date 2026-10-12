@@ -33,9 +33,23 @@ if want ops; then
   done
 fi
 
-# Roll every service onto the new images (tags are mutable: force a new deployment)
+# Roll the services that use the rebuilt images (tags are mutable: force a new deployment). Kafka and
+# Presidio use public images and are left alone.
+uses() {  # service -> image it runs
+  case "$1" in
+    api) echo sentinel ;;
+    worker) echo "sentinel ops" ;;
+    mcp-*) echo mcp ;;
+    workbench) echo workbench ;;
+    airflow) echo airflow ;;
+    observability) echo ops ;;
+  esac
+}
 services="$(aws ecs list-services --cluster "$CLUSTER" --region "$REGION" --query 'serviceArns[]' --output text 2>/dev/null || true)"
 for arn in $services; do
-  aws ecs update-service --cluster "$CLUSTER" --service "${arn##*/}" --force-new-deployment \
-    --region "$REGION" --query 'service.serviceName' --output text
+  service="${arn##*/}"
+  if [[ "$ONLY" == all && -n "$(uses "$service")" ]] || [[ " $(uses "$service") " == *" $ONLY "* ]]; then
+    aws ecs update-service --cluster "$CLUSTER" --service "$service" --force-new-deployment \
+      --region "$REGION" --query 'service.serviceName' --output text
+  fi
 done

@@ -139,6 +139,8 @@ locals {
             AIRFLOW__CORE__LOAD_EXAMPLES                  = "False"
             AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS = "True" # demo: behind the CloudFront IP allow-list
             AIRFLOW__API__BASE_URL                        = local.urls.airflow
+            # Task runners call the execution API inside the container, not through CloudFront (IP allow-list)
+            AIRFLOW__CORE__EXECUTION_API_SERVER_URL = "http://localhost:8080/execution/"
           })
           secrets = merge(local.sentinel_secrets, { AIRFLOW__DATABASE__SQL_ALCHEMY_CONN = "airflow_dsn" })
         }]

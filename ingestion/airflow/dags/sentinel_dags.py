@@ -1,7 +1,7 @@
 """Sentinel batch jobs (Airflow 3). Each task calls the `sentinel` CLI from its own virtual environment
 in the image (docker/airflow.Dockerfile), so the same commands run from a terminal or from Airflow.
 
-- alert_replay      golden-set alerts -> Kafka -> workers -> scored against ground truth (on demand)
+- alert_replay      named or sampled alerts -> Kafka -> workers -> scored against ground truth (on demand)
 - sanctions_refresh reload the sanctions and PEP lists in one transaction (daily)
 - graph_rebuild     reload the customer network into Neo4j and recompute mule scores (daily, after lists)
 - policy_reembed    re-embed the policy manuals into the pgvector knowledge base (on demand)
@@ -27,6 +27,8 @@ with DAG(
     default_args=DEFAULTS,
     tags=["sentinel", "evaluation", "demo"],
     params={
+        "cases": Param("", type="string", description="Case IDs to replay, comma-separated (e.g. "
+                       "CASE-0001,CASE-0002,CASE-0003). Leave empty to sample the split below"),
         "split": Param("dev", enum=["dev", "holdout", "all"], description="Golden-set split"),
         "n": Param(5, type="integer", minimum=1, maximum=100, description="Cases, balanced across typologies"),
         "timeout_minutes": Param(120, type="integer", minimum=5, maximum=600),
@@ -35,7 +37,10 @@ with DAG(
 ) as alert_replay:
     select = BashOperator(
         task_id="select_cases",
-        bash_command=f"{SENTINEL} replay select --split {{{{ params.split }}}} --n {{{{ params.n }}}}",
+        # Named cases if given, else a balanced sample of the split
+        bash_command="{% if params.cases | trim %}echo '{{ params.cases | replace(' ', '') }}'{% else %}"
+                     + f"{SENTINEL} replay select --split {{{{ params.split }}}} --n {{{{ params.n }}}}"
+                     + "{% endif %}",
         do_xcom_push=True,  # last line of output: the comma-separated case IDs
     )
     cases = "{{ ti.xcom_pull(task_ids='select_cases') }}"
